@@ -1,0 +1,33 @@
+# Python-generated files
+__pycache__/
+.pytest_cache/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.vscode/
+
+# Virtual environments
+.venv
+.env
+.env.local
+.env.*.local
+
+# Development files
+command.txt
+notes.txt
+notes.md
+context/
+
+# Logs
+logs/
+
+# Static
+static/
+
+# Tests
+.test_artifacts/
+
+# docker
+my_docker-compose.yml

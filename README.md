@@ -1,0 +1,204 @@
+# Cheese Bot — Ruta del Queso
+
+AI-powered chatbot for **Ruta del Queso**, a tourism platform in Uruguay that connects travelers with cheese establishments, gastronomic experiences, and thematic routes. The bot handles discovery, real-time availability, reservations, payments and customer support through WhatsApp and Telegram.
+
+WhatsApp (temporal): **+598 91 656 911**
+Telegram: @cheese_route_bot
+
+---
+
+## Use Cases
+
+- Answer questions about cheese experiences, routes and establishments
+- Check real-time availability for experiences and routes
+- Create, modify and cancel individual reservations
+- Guide users through payment instructions
+- Send QR codes, itineraries and reminders
+- Open support tickets and escalate to a human agent
+- Manage CRM contacts and leads
+
+---
+
+## Key Features
+
+- Conversational AI agent powered by **Google Gemini** via PydanticAI
+- Multi-channel support: **WhatsApp Business API** and **Telegram**
+- Persistent conversation history in **PostgreSQL**
+- ERP integration for catalog, availability and reservations
+- `/restart` command to reset chat history on demand
+- Developer error notifications via Telegram
+- Error monitoring with **Sentry**
+- Audio transcription (Speech-to-Text) support
+- Correlation ID middleware for request tracing
+
+---
+
+## Technologies
+
+| Layer | Technology |
+|---|---|
+| Language | Python 3.13+ |
+| API framework | FastAPI |
+| AI agent | PydanticAI |
+| AI model | Google Gemini |
+| Messaging — WhatsApp | Meta WhatsApp Business API |
+| Messaging — Telegram | python-telegram-bot |
+| Database | PostgreSQL (asyncpg + SQLAlchemy + databases) |
+| Audio | ffmpeg + Speech-to-Text |
+| Error monitoring | Sentry |
+| Package manager | uv |
+
+---
+
+## Architecture
+
+```
+cheese_bot/
+├── chatbot/
+│   ├── ai_agent/       # PydanticAI agent, prompts, tools and dependencies
+│   │   └── tools/      # Catalog, availability, customer, payments, booking, support
+│   ├── api/            # FastAPI routers: WhatsApp webhook, ERP webhook, Telegram, chat
+│   │   └── utils/      # Message handling, queue, webhook parsing, security
+│   ├── audio/          # Audio conversion and speech-to-text
+│   ├── core/           # Config, logging and Sentry setup
+│   ├── db/             # Database schema (users, messages) and services
+│   ├── erp/            # ERP client helpers
+│   └── messaging/      # WhatsApp and Telegram notification clients
+├── context/            # API specs, documentation and ERP I/O examples
+├── scripts/            # Manual test and debug scripts
+└── docker/             # Container configuration
+```
+
+**Request flow:**
+1. Message received via WhatsApp webhook or Telegram
+2. Message queued and processed asynchronously
+3. PydanticAI agent runs with injected dependencies (contact, ERP client, DB)
+4. Agent calls ERP tools as needed and returns a structured response
+5. Response sent back to the user through the corresponding channel
+
+---
+
+## Environment Variables
+
+Create a `.env` file in the project root with the following variables:
+
+```env
+# General
+ENV_STATE=dev          # dev | prod
+DATABASE_URL=postgresql://user:password@host:5432/dbname
+
+# ERP
+ERP_HOST=https://your-erp-host.com
+ERP_USER=your_erp_user
+ERP_PASSWORD=your_erp_password
+ERP_API_TOKEN=your_erp_api_token
+
+# AI
+OPENAI_API_KEY=sk-...
+GOOGLE_API_KEY=your_google_api_key
+
+# Meta WhatsApp Business API
+WHATSAPP_ACCESS_TOKEN=your_token
+WHATSAPP_PHONE_NUMBER_ID=your_phone_number_id
+WHATSAPP_VERIFY_TOKEN=your_verify_token
+WHATSAPP_BOT_NUMBER=+59891656911
+WABA_ID=your_waba_id
+
+# Sentry
+SENTRY_DSN=https://...@sentry.io/...
+
+# Server
+SERVER_HOST=https://your-server.com
+
+# Auth
+ADMIN_API_KEY=your_admin_api_key
+
+# Telegram developer notifications
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token
+TELEGRAM_DEV_CHAT_ID=your_chat_id
+
+# Other
+MINUTES_BETWEEN_IMAGES=30
+USE_FFMPEG=true
+```
+
+---
+
+## APIs Consumed
+
+| API | Purpose |
+|---|---|
+| ERP REST API | Catalog, availability, reservations, contacts, leads |
+| Meta WhatsApp Business API | Send and receive WhatsApp messages |
+| Google AI (Gemini) | Natural language understanding and response generation |
+
+---
+
+## Database
+
+**PostgreSQL** with two main tables:
+
+- `users` — stores contact info, permissions and last interaction timestamp
+- `messages` — stores full conversation history per user, including tool calls
+
+---
+
+## How to Run
+
+### Requirements
+
+- Python 3.13+
+- [uv](https://docs.astral.sh/uv/) installed
+- PostgreSQL instance running
+- `.env` file configured
+
+### Install dependencies
+
+```bash
+uv sync
+```
+
+### Run the API server (WhatsApp + ERP webhooks)
+
+```bash
+uv run uvicorn chatbot.api.main:app --host 0.0.0.0 --port 8000
+```
+
+### Run the Telegram bot
+
+```bash
+uv run python scripts/run_telegram_bot.py
+```
+
+### API Documentation (Swagger)
+
+Once the server is running, open [http://localhost:8000/docs](http://localhost:8000/docs) for the interactive Swagger UI.
+
+---
+
+## Running Tests
+
+```bash
+uv run pytest
+```
+
+Run a specific test file with output:
+
+```bash
+uv run pytest -s path/to/test_file.py
+```
+
+---
+
+## Areas for Improvement
+
+- Add structured agent outputs (`answer`, `reasoning`, `needs_human`)
+- Variable for selecting AI model at runtime via environment variable
+- Implement WhatsApp message templates
+- Add OCR support for image processing
+- Add date/time utility tools for the agent
+- Complete remaining reservation tools (modify, cancel, itinerary, surveys)
+
+---
+
+© Osliani Figueiras Saucedo
