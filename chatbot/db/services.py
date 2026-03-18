@@ -10,6 +10,7 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
+    SystemPromptPart,
     TextPart,
     UserPromptPart,
 )
@@ -172,6 +173,8 @@ class Services:
                         parts=[TextPart(content=content)], model_name="restored"
                     )
                 )
+            elif role == "system":
+                history.append(ModelRequest(parts=[SystemPromptPart(content=content)]))
         logger.debug(
             "Loaded %d history messages for %s (last %dh)", len(history), phone, hours
         )

@@ -15,8 +15,10 @@ from chatbot.ai_agent.prompts import SYSTEM_PROMPT
 from chatbot.ai_agent.tools.booking import (
     confirm_modification,
     create_pending_reservation,
+    create_route_reservation,
     get_reservation_status,
     get_reservations_by_phone,
+    get_route_booking_status,
 )
 from chatbot.ai_agent.tools.catalog import (
     get_availability,
@@ -34,6 +36,7 @@ from chatbot.ai_agent.tools.customer import (
     upsert_lead,
 )
 from chatbot.ai_agent.tools.date_resolver import resolve_relative_date
+from chatbot.ai_agent.tools.support import create_complaint
 
 logger = logging.getLogger(__name__)
 ERP_TIMEOUT_SECONDS = 15.0
@@ -75,8 +78,13 @@ AGENT_TOOLS = [
     get_reservation_status,
     get_reservations_by_phone,
     confirm_modification,
+    # Route reservations
+    create_route_reservation,
+    get_route_booking_status,
     # Date resolution sub-agent
     resolve_relative_date,
+    # Support & complaints
+    create_complaint,
 ]
 
 
@@ -92,7 +100,7 @@ def get_cheese_agent() -> Agent[AgentDeps, str]:
     global _cheese_agent  # noqa: PLW0603
     if _cheese_agent is None:
         _cheese_agent = Agent(
-            model=GoogleModel.Gemini_3_Flash_Preview,
+            model=GoogleModel.Gemini_Flash_Latest,
             system_prompt=SYSTEM_PROMPT,
             deps_type=AgentDeps,
             tools=AGENT_TOOLS,

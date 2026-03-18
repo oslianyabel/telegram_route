@@ -1,15 +1,22 @@
+import asyncio
 import logging
+import time
+import traceback
+from datetime import datetime
 
 import httpx
 from dotenv import load_dotenv
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from pydantic_ai import AgentRunResult
+from pydantic_ai.exceptions import ModelAPIError
 from pydantic_ai.messages import ModelResponse, ToolCallPart
 
 from chatbot.ai_agent import get_cheese_agent
 from chatbot.ai_agent.context import webhook_context_manager
 from chatbot.ai_agent.dependencies import AgentDeps
+from chatbot.ai_agent.error_agent import run_error_agent
+from chatbot.ai_agent.summary_agent import summarize_conversation
 from chatbot.api.utils import message_handler
 from chatbot.api.utils.message_queue import Message, message_queue
 from chatbot.api.utils.text import strip_markdown
@@ -17,7 +24,8 @@ from chatbot.api.utils.webhook_parser import extract_message_content
 from chatbot.core.config import config
 from chatbot.db.services import services
 from chatbot.erp.client import build_erp_client
-from chatbot.messaging.telegram_notifier import notify_error
+from chatbot.erp.transcript import upload_message_transcript
+from chatbot.messaging.telegram_notifier import notify_error, notify_slow_response
 from chatbot.messaging.whatsapp import whatsapp_manager
 
 logger = logging.getLogger(__name__)
@@ -27,6 +35,43 @@ ERROR_STATUS = {"status": "error"}
 OK_STATUS = {"status": "ok"}
 USER_ERROR_MSG = "Ocurrio un error al procesar tu mensaje. Por favor intentalo de nuevo o escribe /restart para reiniciar el chat."
 erp_client: httpx.AsyncClient = build_erp_client()
+
+# Excepciones que indican un fallo transitorio del proveedor de IA y ameritan reintento
+_PROVIDER_ERRORS = (ModelAPIError, httpx.TimeoutException, httpx.ConnectError)
+
+SLOW_RESPONSE_THRESHOLD: float = 30.0
+HISTORY_SUMMARY_THRESHOLD: int = 30
+
+
+async def _maybe_compress_history(user_number: str, history_len: int) -> None:
+    """Comprime el historial si tras el turno actual supera el umbral.
+
+    Genera un resumen con summarize_conversation, borra el historial y persiste
+    el resumen como mensaje de sistema para que el agente retome el contexto.
+    """
+    total = history_len + 2  # +1 usuario + 1 asistente del turno actual
+    if total <= HISTORY_SUMMARY_THRESHOLD:
+        return
+
+    logger.info(
+        "[history] Compressing history for %s (%d messages > %d threshold)",
+        user_number,
+        total,
+        HISTORY_SUMMARY_THRESHOLD,
+    )
+    try:
+        chat_str = await services.get_chat_str(user_number)
+        summary = await summarize_conversation(chat_str)
+        await services.reset_chat(user_number)
+        await services.create_message(phone=user_number, role="system", message=summary)
+        logger.info("[history] History compressed for %s", user_number)
+    except Exception as exc:
+        logger.error(
+            "[history] Failed to compress history for %s: %s", user_number, exc
+        )
+        await notify_error(
+            exc, context=f"_maybe_compress_history | user={user_number}"
+        )
 
 
 @router.get("")
@@ -100,10 +145,63 @@ async def _process_message(message: Message) -> None:
 
         agent = get_cheese_agent()
         history = await services.get_pydantic_ai_history(user_number, hours=24)
-        result = await agent.run(incoming_msg, deps=deps, message_history=history)
 
-        ai_response: str = strip_markdown(result.output)
-        tools_used = _extract_tools_used(result)
+        ai_response: str
+        tools_used: list[str]
+        message_datetime = datetime.now()
+        provider_error: str | None = None
+
+        try:
+            agent_start = time.monotonic()
+            try:
+                result = await agent.run(
+                    incoming_msg, deps=deps, message_history=history
+                )
+            except _PROVIDER_ERRORS as provider_exc:
+                logger.warning(
+                    "Provider error on first attempt for %s: %s. Retrying...",
+                    user_number,
+                    provider_exc,
+                )
+                provider_error = f"{type(provider_exc).__name__}: {provider_exc}"
+                result = await agent.run(
+                    incoming_msg, deps=deps, message_history=history
+                )
+
+            response_time = time.monotonic() - agent_start
+            ai_response = strip_markdown(result.output)
+            tools_used = _extract_tools_used(result)
+
+            if response_time > SLOW_RESPONSE_THRESHOLD:
+                logger.warning(
+                    "Slow response for %s: %.1fs", user_number, response_time
+                )
+                await notify_slow_response(
+                    phone=user_number,
+                    user_message=incoming_msg,
+                    tools_used=tools_used,
+                    ai_response=ai_response,
+                    message_datetime=message_datetime,
+                    history_count=len(history),
+                    response_time=response_time,
+                    provider_error=provider_error,
+                )
+
+        except Exception as agent_exc:
+            logger.error(
+                "Agent error for %s: %s", user_number, agent_exc, exc_info=True
+            )
+            await notify_error(
+                agent_exc,
+                context=f"_process_message | user={user_number} | msg={incoming_msg[:200]}",
+            )
+            try:
+                explanation = await run_error_agent(traceback.format_exc())
+                ai_response = explanation.user_message
+            except Exception as explainer_exc:
+                logger.error("Error agent also failed: %s", explainer_exc)
+                ai_response = USER_ERROR_MSG
+            tools_used = []
 
         logger.info("🤖 Agent response for %s: %s", user_number, ai_response)
         logger.info("🔧 Tools used: %s", tools_used)
@@ -111,6 +209,15 @@ async def _process_message(message: Message) -> None:
         await message_handler.save_assistant_msg(user_number, ai_response, tools_used)
         await whatsapp_manager.send_text(
             user_number=user_number, text=ai_response, message_id=message_id
+        )
+        asyncio.create_task(_maybe_compress_history(user_number, len(history)))
+        asyncio.create_task(
+            upload_message_transcript(
+                client=erp_client,
+                phone_number=user_number,
+                user_message=incoming_msg,
+                bot_response=ai_response,
+            )
         )
 
     except Exception as exc:
@@ -137,7 +244,14 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
     if not message_data:
         return OK_STATUS
 
-    user_number, incoming_msg, message_id = message_data
+    user_number, incoming_msg, message_id, direct_response = message_data
+
+    if direct_response:
+        await whatsapp_manager.mark_read(message_id)
+        await whatsapp_manager.send_text(
+            user_number=user_number, text=incoming_msg, message_id=message_id
+        )
+        return OK_STATUS
 
     msg = Message(user_number=user_number, content=incoming_msg, message_id=message_id)
     await message_queue.enqueue(msg)

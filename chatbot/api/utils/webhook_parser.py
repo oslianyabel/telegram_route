@@ -3,6 +3,8 @@ from pathlib import Path
 
 import httpx
 
+from chatbot.ai_agent.models import PaymentReceipt
+from chatbot.ai_agent.tools.ocr import extract_payment_receipt
 from chatbot.audio.audio_converter import convert_ogg_to_mp3
 from chatbot.audio.stt import AVAILABLE_AUDIO_FORMATS, transcribe_audio
 from chatbot.core.config import config
@@ -13,7 +15,7 @@ META_REQUEST_TIMEOUT_SECONDS = 10.0
 MEDIA_REQUEST_TIMEOUT_SECONDS = 20.0
 
 
-async def extract_message_content(webhook_data: dict) -> tuple[str, str, str] | None:
+async def extract_message_content(webhook_data: dict) -> tuple[str, str, str, bool] | None:
     try:
         entry = webhook_data.get("entry", [])[0]
         changes = entry.get("changes", [])[0]
@@ -40,7 +42,6 @@ async def extract_message_content(webhook_data: dict) -> tuple[str, str, str] | 
         message_type = message.get("type", "")
         media_types = {
             "video",
-            "image",
             "document",
             "sticker",
             "location",
@@ -52,7 +53,43 @@ async def extract_message_content(webhook_data: dict) -> tuple[str, str, str] | 
             )
             return None
 
-        if message_type == "audio":
+        if message_type == "image":
+            media_obj = message.get("image", {})
+            media_id = media_obj.get("id")
+            if not media_id:
+                logger.error("Image message without media id")
+                return None
+
+            media_meta_url = f"{API_BASE}/{media_id}"
+            headers = {"Authorization": f"Bearer {config.WHATSAPP_ACCESS_TOKEN}"}
+            timeout = httpx.Timeout(MEDIA_REQUEST_TIMEOUT_SECONDS)
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                meta_resp = await client.get(
+                    media_meta_url,
+                    headers=headers,
+                    timeout=META_REQUEST_TIMEOUT_SECONDS,
+                )
+                meta_resp.raise_for_status()
+                meta_json = meta_resp.json()
+                media_url = meta_json.get("url")
+                if not media_url:
+                    logger.error(f"No media url for media id {media_id}")
+                    return None
+
+                try:
+                    incoming_msg = await _extract_image_from_message(
+                        user_number=user_number,
+                        media_url=media_url,
+                        headers=headers,
+                        client=client,
+                    )
+                except Exception as exc:
+                    logger.exception(f"Failed to download/process image: {exc}")
+                    return None
+
+            return user_number, incoming_msg, message_id, True
+
+        elif message_type == "audio":
             media_obj = message.get("audio", {})
             media_id = media_obj.get("id")
             if not media_id:
@@ -93,7 +130,7 @@ async def extract_message_content(webhook_data: dict) -> tuple[str, str, str] | 
             logger.warning("No text message founded")
             return None
 
-        return user_number, incoming_msg, message_id
+        return user_number, incoming_msg, message_id, False
 
     except (IndexError, KeyError) as e:
         logger.error(f"Error extracting message data: {e}")
@@ -162,3 +199,80 @@ def create_or_retrieve_voice_dir() -> Path:
     voice_dir = repo_root / "static" / "voice"
     voice_dir.mkdir(parents=True, exist_ok=True)
     return voice_dir
+
+
+def create_or_retrieve_images_dir() -> Path:
+    repo_root = Path(__file__).resolve().parents[3]
+    images_dir = repo_root / "static" / "images"
+    images_dir.mkdir(parents=True, exist_ok=True)
+    return images_dir
+
+
+async def _extract_image_from_message(
+    user_number: str,
+    media_url: str,
+    headers: dict[str, str],
+    client: httpx.AsyncClient,
+) -> str:
+    """Descarga una imagen de WhatsApp, la guarda en static/images y ejecuta OCR.
+
+    Args:
+        user_number: Número de teléfono del remitente (usado como nombre de archivo).
+        media_url: URL firmada del archivo en la API de Meta.
+        headers: Headers de autorización.
+        client: Cliente HTTP async reutilizado.
+
+    Returns:
+        Texto plano con los datos extraídos del comprobante.
+    """
+    ext_map: dict[str, str] = {
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+    }
+
+    async with client.stream(
+        "GET",
+        media_url,
+        headers=headers,
+        timeout=MEDIA_REQUEST_TIMEOUT_SECONDS,
+    ) as response:
+        response.raise_for_status()
+        content_type = response.headers.get("content-type", "").split(";")[0].strip()
+        ext = ext_map.get(content_type, ".jpg")
+
+        images_dir = create_or_retrieve_images_dir()
+        file_path = images_dir / f"{user_number}{ext}"
+        with open(file_path, "wb") as fh:
+            async for chunk in response.aiter_bytes(chunk_size=8192):
+                if chunk:
+                    fh.write(chunk)
+
+    logger.info("[image] Saved image to %s", file_path)
+
+    receipt = await extract_payment_receipt(str(file_path))
+    return _format_receipt_as_text(receipt)
+
+
+def _format_receipt_as_text(receipt: PaymentReceipt) -> str:
+    """Convierte un PaymentReceipt en texto plano legible."""
+    field_labels: list[tuple[str, str]] = [
+        ("amount", "Monto"),
+        ("transaction_datetime", "Fecha/Hora"),
+        ("reference", "Referencia"),
+        ("destination_account", "Cuenta destino"),
+        ("recipient_name", "Beneficiario"),
+        ("payment_method", "Metodo de pago"),
+        ("branch", "Sucursal"),
+        ("concept", "Concepto"),
+    ]
+    lines: list[str] = []
+    for field, label in field_labels:
+        value: str | None = getattr(receipt, field, None)
+        if value:
+            lines.append(f"{label}: {value}")
+
+    if not lines:
+        return "No se pudo extraer informacion del comprobante."
+
+    return "\n".join(lines)

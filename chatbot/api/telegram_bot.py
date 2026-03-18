@@ -30,6 +30,7 @@ from chatbot.ai_agent import get_cheese_agent
 from chatbot.ai_agent.context import webhook_context_manager
 from chatbot.ai_agent.dependencies import AgentDeps
 from chatbot.ai_agent.error_agent import run_error_agent
+from chatbot.ai_agent.tools.ocr import extract_payment_receipt
 from chatbot.api.utils import message_handler, telegram_commands
 from chatbot.api.utils.telegram_commands import (
     cmd_get_availability,
@@ -45,6 +46,10 @@ from chatbot.api.utils.telegram_commands import (
     cmd_upsert_lead,
 )
 from chatbot.api.utils.text import strip_markdown
+from chatbot.api.utils.webhook_parser import (
+    _format_receipt_as_text,
+    create_or_retrieve_images_dir,
+)
 from chatbot.core.config import config
 from chatbot.core.logging_conf import init_logging
 from chatbot.db.services import services
@@ -143,6 +148,51 @@ async def _handle_restart(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await services.reset_chat(chat_id)
     await update.message.reply_text("Chat reiniciado. ¿En qué te puedo ayudar?")
     logger.info("'/restart' requested by telegram_id=%s", chat_id)
+
+
+async def _handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Descarga la imagen recibida, ejecuta OCR y devuelve el resultado al usuario."""
+    if not update.message or not update.message.photo or not update.effective_chat:
+        return
+
+    chat_id: str = str(update.effective_chat.id)
+
+    try:
+        photo = update.message.photo[-1]  # mayor resolución disponible
+        tg_file = await photo.get_file()
+
+        ext: str = ".jpg"
+        if tg_file.file_path:
+            suffix = tg_file.file_path.rsplit(".", 1)[-1].lower()
+            if suffix in {"jpg", "jpeg", "png", "webp"}:
+                ext = f".{suffix}"
+
+        images_dir = create_or_retrieve_images_dir()
+        file_path = images_dir / f"{chat_id}{ext}"
+        await tg_file.download_to_drive(str(file_path))
+        logger.info("[image] Saved Telegram image to %s", file_path)
+
+        typing_task = asyncio.create_task(
+            _typing_loop(context.bot, update.effective_chat.id)
+        )
+        try:
+            receipt = await extract_payment_receipt(str(file_path))
+            ocr_text: str = _format_receipt_as_text(receipt)
+        finally:
+            typing_task.cancel()
+
+        logger.info("[image] OCR result for telegram_id=%s: %s", chat_id, ocr_text)
+        await update.message.reply_text(ocr_text)
+
+    except Exception as exc:
+        logger.exception("Error processing image for telegram_id=%s: %s", chat_id, exc)
+        await notify_error(
+            exc,
+            context=f"telegram_bot._handle_image | chat_id={chat_id}",
+        )
+        await update.message.reply_text(
+            "Ocurrió un error al procesar la imagen. Por favor inténtalo de nuevo."
+        )
 
 
 async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -324,5 +374,6 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("upsert_lead", cmd_upsert_lead))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_message))
+    app.add_handler(MessageHandler(filters.PHOTO, _handle_image))
 
     return app

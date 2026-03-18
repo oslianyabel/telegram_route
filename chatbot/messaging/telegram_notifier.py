@@ -3,11 +3,11 @@
 Uses the Telegram Bot API directly via httpx (no extra dependency needed).
 Configure TELEGRAM_BOT_TOKEN and TELEGRAM_DEV_CHAT_ID in the .env file.
 """
-
 from __future__ import annotations
 
 import logging
 import traceback
+from datetime import datetime
 
 import httpx
 
@@ -15,6 +15,8 @@ from chatbot.core.config import config
 
 logger = logging.getLogger(__name__)
 
+TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
+MAX_MESSAGE_LENGTH = 4096
 TELEGRAM_API_BASE = "https://api.telegram.org"
 _SEND_TIMEOUT = 10.0
 
@@ -77,3 +79,103 @@ async def notify_error(
                 logger.debug("Telegram error notification sent to %s", chat_id)
     except Exception as notify_exc:  # noqa: BLE001
         logger.warning("Could not send Telegram notification: %s", notify_exc)
+
+
+def _build_slow_response_message(
+    phone: str,
+    user_message: str,
+    tools_used: list[str],
+    ai_response: str,
+    message_datetime: datetime,
+    history_count: int,
+    response_time: float,
+    provider_error: str | None = None,
+) -> str:
+    """Construye el mensaje de alerta por respuesta lenta.
+
+    Args:
+        phone: Número de teléfono del usuario.
+        user_message: Consulta enviada por el usuario.
+        tools_used: Herramientas empleadas por el agente.
+        ai_response: Respuesta generada por el agente.
+        message_datetime: Fecha y hora del mensaje.
+        history_count: Cantidad de mensajes en el historial.
+        response_time: Tiempo de respuesta en segundos.
+        provider_error: Descripción del error del proveedor de IA, si hubo alguno.
+
+    Returns:
+        Mensaje formateado para Telegram.
+    """
+    tools_str = ", ".join(tools_used) if tools_used else "ninguna"
+    date_str = message_datetime.strftime("%d/%m/%Y %H:%M:%S")
+    error_str = f"`{provider_error}`" if provider_error else "ninguno"
+    response_preview = (
+        ai_response[:300] + "..." if len(ai_response) > 300 else ai_response
+    )
+
+    message = (
+        f"⏱️ *Respuesta lenta detectada* ({response_time:.1f}s)\n\n"
+        f"*Teléfono:* `{phone}`\n"
+        f"*Fecha y hora:* `{date_str}`\n"
+        f"*Mensajes en historial:* `{history_count}`\n"
+        f"*Herramientas empleadas:* `{tools_str}`\n"
+        f"*Error del proveedor de IA:* {error_str}\n\n"
+        f"*Consulta del usuario:*\n`{user_message[:400]}`\n\n"
+        f"*Respuesta del agente:*\n`{response_preview}`"
+    )
+
+    if len(message) > MAX_MESSAGE_LENGTH:
+        message = message[: MAX_MESSAGE_LENGTH - 10] + "\n...```"
+    return message
+
+
+async def notify_slow_response(
+    phone: str,
+    user_message: str,
+    tools_used: list[str],
+    ai_response: str,
+    message_datetime: datetime,
+    history_count: int,
+    response_time: float,
+    provider_error: str | None = None,
+) -> None:
+    """Envía una alerta al desarrollador cuando una respuesta supera el umbral de tiempo.
+
+    Args:
+        phone: Número de teléfono del usuario.
+        user_message: Consulta enviada por el usuario.
+        tools_used: Herramientas empleadas por el agente.
+        ai_response: Respuesta generada por el agente.
+        message_datetime: Fecha y hora del mensaje.
+        history_count: Cantidad de mensajes en el historial.
+        response_time: Tiempo de respuesta en segundos.
+        provider_error: Descripción del error del proveedor de IA, si hubo alguno.
+    """
+    url = TELEGRAM_API_URL.format(token=config.TELEGRAM_BOT_TOKEN)
+    message = _build_slow_response_message(
+        phone=phone,
+        user_message=user_message,
+        tools_used=tools_used,
+        ai_response=ai_response,
+        message_datetime=message_datetime,
+        history_count=history_count,
+        response_time=response_time,
+        provider_error=provider_error,
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(
+                url,
+                json={
+                    "chat_id": config.TELEGRAM_DEV_CHAT_ID,
+                    "text": message,
+                    "parse_mode": "Markdown",
+                },
+            )
+            response.raise_for_status()
+            logger.info(
+                f"Slow response notification sent to developer (phone={phone}, time={response_time:.2f}s)."
+            )
+    except httpx.HTTPError as http_err:
+        logger.error(f"Failed to send slow response Telegram notification: {http_err}")

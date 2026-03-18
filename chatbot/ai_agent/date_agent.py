@@ -136,7 +136,7 @@ async def run_date_agent(query: str) -> DateResolution:
 
         provider = GoogleProvider(http_client=http_client)
         # Strip "google-gla:" prefix; PydanticAIGoogleModel expects bare name.
-        model_name = GoogleModel.Gemini_3_Flash_Preview.value.split(":", 1)[-1]
+        model_name = GoogleModel.Gemini_Flash_Lite_Latest.value.split(":", 1)[-1]
         google_model = PydanticAIGoogleModel(model_name, provider=provider)
         agent: Agent[None, DateResolution] = Agent(
             model=google_model,

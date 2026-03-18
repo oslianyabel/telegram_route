@@ -92,7 +92,7 @@ async def run_error_agent(raw_error: str) -> ErrorExplanation:
 
     async with httpx.AsyncClient(timeout=30.0) as http_client:
         provider = GoogleProvider(http_client=http_client)
-        model_name = GoogleModel.Gemini_3_Flash_Preview.value.split(":", 1)[-1]
+        model_name = GoogleModel.Gemini_Flash_Lite_Latest.value.split(":", 1)[-1]
         google_model = PydanticAIGoogleModel(model_name, provider=provider)
 
         agent: Agent[None, ErrorExplanation] = Agent(

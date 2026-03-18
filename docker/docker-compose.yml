@@ -1,0 +1,39 @@
+services:
+  telegram-bot:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      # Override DATABASE_URL to use the db service name instead of localhost
+      DATABASE_URL: postgresql://osliani:ofs@db:5432/cheese
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - cheese-net
+
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: osliani
+      POSTGRES_PASSWORD: ofs
+      POSTGRES_DB: cheese
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U osliani -d cheese"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - cheese-net
+
+volumes:
+  postgres_data:
+
+networks:
+  cheese-net:

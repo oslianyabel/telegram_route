@@ -50,3 +50,19 @@ def extract_erp_meta(response_json: dict[str, Any]) -> dict[str, Any] | None:
     if isinstance(wrapper, dict):
         return wrapper.get("meta")
     return None
+
+
+def extract_erp_error(response_json: dict[str, Any]) -> str:
+    """Extract a human-readable error message from a failed ERP response body.
+
+    Handles the ERP error envelope::
+
+        {"message": {"success": false, "error": {"code": "...", "message": "..."}}}
+    """
+    wrapper: Any = response_json.get("message", response_json)
+    if isinstance(wrapper, dict):
+        error = wrapper.get("error", {})
+        if isinstance(error, dict):
+            return str(error.get("message") or error.get("code") or wrapper)
+        return str(wrapper.get("message") or wrapper)
+    return str(wrapper)
