@@ -63,7 +63,7 @@ app.add_middleware(
 
 app.include_router(whatsapp_router, prefix="/whatsapp")
 app.include_router(chat_router)
-app.include_router(erp_webhook_router)
+app.include_router(erp_webhook_router, prefix="/erp")
 
 
 @app.get("/health")

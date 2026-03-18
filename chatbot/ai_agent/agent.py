@@ -13,6 +13,7 @@ from chatbot.ai_agent.instructions import resolve_or_create_contact
 from chatbot.ai_agent.models import GoogleModel
 from chatbot.ai_agent.prompts import SYSTEM_PROMPT
 from chatbot.ai_agent.tools.booking import (
+    cancel_reservation,
     confirm_modification,
     create_pending_reservation,
     create_route_reservation,
@@ -78,6 +79,7 @@ AGENT_TOOLS = [
     get_reservation_status,
     get_reservations_by_phone,
     confirm_modification,
+    cancel_reservation,
     # Route reservations
     create_route_reservation,
     get_route_booking_status,

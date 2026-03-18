@@ -17,10 +17,11 @@ from chatbot.ai_agent.context import webhook_context_manager
 from chatbot.ai_agent.dependencies import AgentDeps
 from chatbot.ai_agent.error_agent import run_error_agent
 from chatbot.ai_agent.summary_agent import summarize_conversation
+from chatbot.ai_agent.tools.payments import parse_amount, register_deposit_payment
 from chatbot.api.utils import message_handler
 from chatbot.api.utils.message_queue import Message, message_queue
 from chatbot.api.utils.text import strip_markdown
-from chatbot.api.utils.webhook_parser import extract_message_content
+from chatbot.api.utils.webhook_parser import ParsedMessage, extract_message_content
 from chatbot.core.config import config
 from chatbot.db.services import services
 from chatbot.erp.client import build_erp_client
@@ -69,9 +70,7 @@ async def _maybe_compress_history(user_number: str, history_len: int) -> None:
         logger.error(
             "[history] Failed to compress history for %s: %s", user_number, exc
         )
-        await notify_error(
-            exc, context=f"_maybe_compress_history | user={user_number}"
-        )
+        await notify_error(exc, context=f"_maybe_compress_history | user={user_number}")
 
 
 @router.get("")
@@ -244,13 +243,23 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
     if not message_data:
         return OK_STATUS
 
-    user_number, incoming_msg, message_id, direct_response = message_data
+    user_number = message_data.user_number
+    message_id = message_data.message_id
 
-    if direct_response:
+    # --- Image receipt: OCR → ERP registration → notify user ---
+    if message_data.receipt is not None:
         await whatsapp_manager.mark_read(message_id)
-        await whatsapp_manager.send_text(
-            user_number=user_number, text=incoming_msg, message_id=message_id
+        background_tasks.add_task(
+            _process_image_receipt,
+            user_number=user_number,
+            message_id=message_id,
+            message_data=message_data,
         )
+        return OK_STATUS
+
+    # --- Text / audio: queue for agent processing ---
+    incoming_msg = message_data.text or ""
+    if not incoming_msg:
         return OK_STATUS
 
     msg = Message(user_number=user_number, content=incoming_msg, message_id=message_id)
@@ -263,3 +272,104 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
         logger.warning(f"Queue size for {user_number} is {queue_size}")
 
     return OK_STATUS
+
+
+async def _process_image_receipt(
+    user_number: str,
+    message_id: str,
+    message_data: ParsedMessage,
+) -> None:
+    """Register a payment receipt in the ERP and notify the user via WhatsApp."""
+    receipt = message_data.receipt
+    ticket_id = message_data.ticket_id
+
+    if receipt is None:
+        return
+
+    # Validate required fields before hitting the ERP
+    amount = parse_amount(receipt.amount)
+    if amount is None:
+        logger.error(
+            "[receipt] Could not parse amount from receipt for user=%s amount_raw=%s",
+            user_number,
+            receipt.amount,
+        )
+        await whatsapp_manager.send_text(
+            user_number=user_number,
+            text=(
+                "No se pudo determinar el monto del comprobante. "
+                "Por favor verifica la imagen e inténtalo de nuevo."
+            ),
+            message_id=message_id,
+        )
+        return
+
+    if not ticket_id:
+        logger.warning(
+            "[receipt] No ticket_id in caption for user=%s — cannot register payment",
+            user_number,
+        )
+        await whatsapp_manager.send_text(
+            user_number=user_number,
+            text=(
+                "Para registrar tu pago necesito el número de ticket (ej: TKT-2026-03-00018). "
+                "Por favor envía la imagen con el número de ticket como descripción."
+            ),
+            message_id=message_id,
+        )
+        return
+
+    ocr_payload = receipt.model_dump(exclude_none=True)
+    try:
+        result = await register_deposit_payment(
+            erp_client=erp_client,
+            ticket_id=ticket_id,
+            amount=amount,
+            ocr_payload=ocr_payload,
+        )
+        logger.info(
+            "[receipt] Payment registered — deposit_id=%s ticket_id=%s amount_paid=%.2f "
+            "amount_remaining=%.2f is_complete=%s",
+            result.deposit_id,
+            result.ticket_id,
+            result.amount_paid,
+            result.amount_remaining,
+            result.is_complete,
+        )
+        if result.is_complete:
+            msg = (
+                f"✅ Pago registrado exitosamente.\n"
+                f"Depósito: {result.deposit_id}\n"
+                f"Monto pagado: {result.amount_paid}\n"
+                f"Estado: Pago completado."
+            )
+        else:
+            msg = (
+                f"✅ Pago registrado exitosamente.\n"
+                f"Depósito: {result.deposit_id}\n"
+                f"Monto pagado: {result.amount_paid}\n"
+                f"Monto restante: {result.amount_remaining}"
+            )
+        await whatsapp_manager.send_text(
+            user_number=user_number, text=msg, message_id=message_id
+        )
+    except Exception as exc:
+        logger.error(
+            "[receipt] Failed to register payment for user=%s ticket=%s: %s",
+            user_number,
+            ticket_id,
+            exc,
+            exc_info=True,
+        )
+        await notify_error(
+            exc,
+            context=f"_process_image_receipt | user={user_number} | ticket={ticket_id}",
+        )
+        await whatsapp_manager.send_text(
+            user_number=user_number,
+            text=(
+                "Ocurrió un error al registrar tu pago en el sistema. "
+                "Por favor inténtalo de nuevo o escala tu solicitud a un humano."
+            ),
+            message_id=message_id,
+        )

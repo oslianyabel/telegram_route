@@ -112,7 +112,6 @@ def ctx_factory(erp_client: httpx.AsyncClient) -> Callable[..., RunContext[Agent
             "user_name": None,
             "contact_id": None,
             "conversation_id": None,
-            "conversation_language": "es",
         }
         base.update(overrides)
         deps = AgentDeps(**base)  # type: ignore[arg-type]

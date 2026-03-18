@@ -8,6 +8,7 @@ from pydantic_ai import ModelRetry, RunContext
 from chatbot.ai_agent.dependencies import AgentDeps
 from chatbot.ai_agent.models import (
     ERP_BASE_PATH,
+    CancellationResult,
     ModificationResult,
     PendingRouteBooking,
     PendingTicket,
@@ -321,3 +322,67 @@ async def get_route_booking_status(
         [t.ticket_id for t in status.tickets],
     )
     return status
+
+
+# ------------------------------------------------------------------
+# 7. Cancel individual reservation
+# ------------------------------------------------------------------
+
+
+async def cancel_reservation(
+    ctx: RunContext[AgentDeps],
+    reservation_id: str,
+    confirmed: bool = False,
+) -> CancellationResult | str:
+    """Cancel a PENDING or CONFIRMED individual experience ticket.
+
+    This action is irreversible. Always call this tool first with
+    ``confirmed=False`` so the user is explicitly asked for consent.
+    Only call again with ``confirmed=True`` once the user has answered
+    affirmatively (e.g. "sí", "confirmo", "adelante").
+
+    Args:
+        ctx: Agent run context with dependencies.
+        reservation_id: ERP ticket ID to cancel (e.g. "TKT-2026-03-00018").
+        confirmed: Must be True for the cancellation to be executed.
+            Pass False (default) to trigger the confirmation prompt.
+    """
+    logger.info(
+        "[cancel_reservation] reservation_id=%s confirmed=%s",
+        reservation_id,
+        confirmed,
+    )
+
+    if not confirmed:
+        return (
+            f"El usuario debe confirmar antes de proceder. "
+            f"Pregúntale: '¿Estás seguro/a de que deseas cancelar tu ticket {reservation_id}? "
+            f"Esta acción no se puede deshacer.' "
+            f"Si responde afirmativamente, llama a esta herramienta de nuevo con confirmed=True."
+        )
+
+    response = await ctx.deps.erp_client.post(
+        f"{ERP_BASE_PATH}.ticket_controller.cancel_reservation",
+        json={"reservation_id": reservation_id},
+        timeout=ERP_TIMEOUT_SECONDS,
+    )
+    if response.is_error:
+        erp_message = extract_erp_error(response.json())
+        logger.error(
+            "[cancel_reservation] ERP error %s: %s",
+            response.status_code,
+            erp_message,
+        )
+        raise ModelRetry(
+            f"ERP rechazó la cancelación ({response.status_code}): {erp_message}."
+        )
+
+    data: dict[str, Any] = extract_erp_data(response.json())
+    result = CancellationResult.model_validate(data)
+    logger.info(
+        "Ticket cancelled: %s – %s → %s",
+        result.ticket_id,
+        result.old_status,
+        result.new_status,
+    )
+    return result

@@ -749,6 +749,15 @@ class ModificationResult(BaseModel):
     changes: list[str] = Field(default_factory=list)
 
 
+class CancellationResult(BaseModel):
+    """Result of ticket_controller.cancel_reservation."""
+
+    ticket_id: str
+    old_status: str | None = None
+    new_status: str | None = None
+    slot_id: str | None = None
+
+
 class ModificationPreview(BaseModel):
     """Preview of the impact of a reservation modification."""
 
@@ -831,6 +840,50 @@ class RouteBookingStatus(BaseModel):
         if isinstance(data, dict) and "deposit_required" in data:
             data["deposit_required"] = bool(data["deposit_required"])
         return data
+
+
+# ---------------------------------------------------------------------------
+# 11. Payments
+# ---------------------------------------------------------------------------
+
+
+class PaymentInstructions(BaseModel):
+    """Payment link and instructions for a ticket deposit.
+
+    ERP endpoint: deposit_controller.get_payment_link_or_instructions
+    ERP response fields: deposit_id, ticket_id, amount_required, amount_paid,
+    amount_remaining, due_at, status, payment_link, instructions.
+    """
+
+    deposit_id: str
+    ticket_id: str
+    amount_required: float | None = None
+    amount_paid: float | None = None
+    amount_remaining: float | None = None
+    due_at: str | None = None
+    status: str | None = None
+    payment_link: str | None = None
+    instructions: str | None = None
+
+
+class DepositPaymentResult(BaseModel):
+    """Result of recording a deposit payment via deposit_controller.record_deposit_payment.
+
+    ERP response data fields: deposit_id, ticket_id, amount_paid,
+    total_amount_paid, amount_required, amount_remaining, old_status,
+    new_status, verification_method, is_complete.
+    """
+
+    deposit_id: str
+    ticket_id: str
+    amount_paid: float
+    total_amount_paid: float
+    amount_required: float
+    amount_remaining: float
+    old_status: str
+    new_status: str
+    verification_method: str
+    is_complete: bool
 
 
 # ---------------------------------------------------------------------------
@@ -926,3 +979,54 @@ class PaymentReceipt(BaseModel):
         None,
         description="Concepto o motivo del pago.",
     )
+
+
+# ---------------------------------------------------------------------------
+# ERP → Bot webhook event models (incoming from ERP triggers)
+# ---------------------------------------------------------------------------
+
+
+class TicketDecision(StrEnum):
+    """Possible outcomes for a pending reservation ticket."""
+
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+
+
+class ERPSendMessageRequest(BaseModel):
+    """Body for /erp/send-whatsapp endpoint.
+
+    The ERP sends this when it wants to push a free-text message to a contact
+    via WhatsApp. The phone is resolved from the ERP using contact_id.
+    The 24-hour META free-messaging window is verified before sending.
+    """
+
+    contact_id: str
+    message: str
+
+
+class ERPTicketStatusRequest(BaseModel):
+    """Body for /erp/ticket-status endpoint.
+
+    The ERP sends this when a pending reservation is approved, rejected, or
+    has expired, so the bot can notify the customer via WhatsApp.
+    """
+
+    contact_id: str
+    ticket_id: str
+    new_status: TicketDecision
+    observations: str | None = None
+
+
+class ERPSurveyRequest(BaseModel):
+    """Body for /erp/activity-completed endpoint.
+
+    The ERP sends this after an activity is completed so the bot can send
+    a satisfaction survey to the customer via WhatsApp.
+    """
+
+    contact_id: str
+    experience_id: str
+    slot_id: str
+    ticket_id: str

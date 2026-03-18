@@ -1,4 +1,6 @@
 import logging
+import re
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
@@ -14,8 +16,27 @@ logger = logging.getLogger(__name__)
 META_REQUEST_TIMEOUT_SECONDS = 10.0
 MEDIA_REQUEST_TIMEOUT_SECONDS = 20.0
 
+# Regex to match ERP ticket IDs like TKT-2026-03-00018
+_TICKET_ID_RE = re.compile(r"TKT-\d{4}-\d{2}-\d+", re.IGNORECASE)
 
-async def extract_message_content(webhook_data: dict) -> tuple[str, str, str, bool] | None:
+
+@dataclass
+class ParsedMessage:
+    """Result of parsing an incoming webhook message.
+
+    For text/audio messages, ``text`` is set and ``receipt`` is None.
+    For image messages (payment receipts), ``receipt`` is set and ``text`` is None.
+    ``ticket_id`` is extracted from the image caption when available.
+    """
+
+    user_number: str
+    message_id: str
+    text: str | None = None
+    receipt: PaymentReceipt | None = None
+    ticket_id: str | None = None
+
+
+async def extract_message_content(webhook_data: dict) -> ParsedMessage | None:
     try:
         entry = webhook_data.get("entry", [])[0]
         changes = entry.get("changes", [])[0]
@@ -56,6 +77,7 @@ async def extract_message_content(webhook_data: dict) -> tuple[str, str, str, bo
         if message_type == "image":
             media_obj = message.get("image", {})
             media_id = media_obj.get("id")
+            caption: str | None = media_obj.get("caption")
             if not media_id:
                 logger.error("Image message without media id")
                 return None
@@ -77,17 +99,23 @@ async def extract_message_content(webhook_data: dict) -> tuple[str, str, str, bo
                     return None
 
                 try:
-                    incoming_msg = await _extract_image_from_message(
+                    receipt, ticket_id = await _extract_image_from_message(
                         user_number=user_number,
                         media_url=media_url,
                         headers=headers,
                         client=client,
+                        caption=caption,
                     )
                 except Exception as exc:
                     logger.exception(f"Failed to download/process image: {exc}")
                     return None
 
-            return user_number, incoming_msg, message_id, True
+            return ParsedMessage(
+                user_number=user_number,
+                message_id=message_id,
+                receipt=receipt,
+                ticket_id=ticket_id,
+            )
 
         elif message_type == "audio":
             media_obj = message.get("audio", {})
@@ -130,7 +158,11 @@ async def extract_message_content(webhook_data: dict) -> tuple[str, str, str, bo
             logger.warning("No text message founded")
             return None
 
-        return user_number, incoming_msg, message_id, False
+        return ParsedMessage(
+            user_number=user_number,
+            message_id=message_id,
+            text=incoming_msg,
+        )
 
     except (IndexError, KeyError) as e:
         logger.error(f"Error extracting message data: {e}")
@@ -213,7 +245,8 @@ async def _extract_image_from_message(
     media_url: str,
     headers: dict[str, str],
     client: httpx.AsyncClient,
-) -> str:
+    caption: str | None = None,
+) -> tuple[PaymentReceipt, str | None]:
     """Descarga una imagen de WhatsApp, la guarda en static/images y ejecuta OCR.
 
     Args:
@@ -221,9 +254,11 @@ async def _extract_image_from_message(
         media_url: URL firmada del archivo en la API de Meta.
         headers: Headers de autorización.
         client: Cliente HTTP async reutilizado.
+        caption: Caption opcional del mensaje de imagen (puede contener ticket_id).
 
     Returns:
-        Texto plano con los datos extraídos del comprobante.
+        Tuple (PaymentReceipt, ticket_id) donde ticket_id se extrae del caption si
+        coincide con el patrón TKT-YYYY-MM-NNNNN, o None si no está disponible.
     """
     ext_map: dict[str, str] = {
         "image/jpeg": ".jpg",
@@ -251,7 +286,33 @@ async def _extract_image_from_message(
     logger.info("[image] Saved image to %s", file_path)
 
     receipt = await extract_payment_receipt(str(file_path))
-    return _format_receipt_as_text(receipt)
+
+    # Log all extracted OCR fields
+    logger.info(
+        "[ocr] Extracted receipt data — "
+        "amount=%s | datetime=%s | reference=%s | destination_account=%s | "
+        "recipient_name=%s | payment_method=%s | branch=%s | concept=%s",
+        receipt.amount,
+        receipt.transaction_datetime,
+        receipt.reference,
+        receipt.destination_account,
+        receipt.recipient_name,
+        receipt.payment_method,
+        receipt.branch,
+        receipt.concept,
+    )
+
+    # Extract ticket_id from caption if it matches the ERP ticket pattern
+    ticket_id: str | None = None
+    if caption:
+        match = _TICKET_ID_RE.search(caption)
+        if match:
+            ticket_id = match.group().upper()
+            logger.info("[image] Extracted ticket_id=%s from caption", ticket_id)
+        else:
+            logger.debug("[image] Caption present but no ticket_id found: %r", caption)
+
+    return receipt, ticket_id
 
 
 def _format_receipt_as_text(receipt: PaymentReceipt) -> str:

@@ -1,8 +1,281 @@
 import logging
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
-from fastapi import APIRouter, Depends
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, status
 
+from chatbot.ai_agent.models import (
+    ERP_BASE_PATH,
+    ContactInfo,
+    ERPSendMessageRequest,
+    ERPSurveyRequest,
+    ERPTicketStatusRequest,
+    TicketDecision,
+)
+from chatbot.ai_agent.tools.erp_utils import extract_erp_data
 from chatbot.api.utils.security import get_api_key
+from chatbot.api.whatsapp_router import erp_client
+from chatbot.db.services import services
+from chatbot.messaging.telegram_notifier import notify_error
+from chatbot.messaging.whatsapp import whatsapp_manager
 
 logger = logging.getLogger(__name__)
 router = APIRouter(dependencies=[Depends(get_api_key)])
+
+ERP_TIMEOUT: float = 15.0
+WHATSAPP_WINDOW_HOURS: int = 24
+
+# ---------------------------------------------------------------------------
+# Mensajes de notificación de estado de ticket
+# ---------------------------------------------------------------------------
+
+_TICKET_MESSAGES: dict[TicketDecision, str] = {
+    TicketDecision.APPROVED: (
+        "✅ ¡Buenas noticias! Tu reserva *{ticket_id}* ha sido *confirmada*. "
+        "{observations}"
+        "¡Te esperamos!"
+    ),
+    TicketDecision.REJECTED: (
+        "Lo sentimos, tu reserva *{ticket_id}* ha sido *rechazada*. "
+        "{observations}"
+        "Si tienes alguna pregunta, escríbenos y con gusto te ayudamos."
+    ),
+    TicketDecision.EXPIRED: (
+        "Tu reserva *{ticket_id}* ha *expirado* por falta de confirmación. "
+        "{observations}"
+        "Puedes hacer una nueva reserva cuando lo desees. 😊"
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# Helpers internos
+# ---------------------------------------------------------------------------
+
+
+async def _get_contact_by_id(contact_id: str) -> ContactInfo:
+    """Obtiene la información de un contacto desde el ERP usando su contact_id.
+
+    Args:
+        contact_id: Identificador del contacto en el ERP.
+
+    Returns:
+        ContactInfo con los datos del contacto, incluyendo el teléfono.
+
+    Raises:
+        HTTPException 502: Si el ERP no responde o devuelve un error.
+        HTTPException 404: Si el contacto no existe en el ERP.
+    """
+    logger.debug("[_get_contact_by_id] contact_id=%s", contact_id)
+    try:
+        response = await erp_client.post(
+            f"{ERP_BASE_PATH}.contact_controller.get_contact",
+            json={"contact_id": contact_id},
+            timeout=ERP_TIMEOUT,
+        )
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        logger.error(
+            "[_get_contact_by_id] ERP HTTP error for contact_id=%s: %s",
+            contact_id,
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"ERP error al obtener contacto: {exc.response.status_code}",
+        ) from exc
+    except httpx.RequestError as exc:
+        logger.error(
+            "[_get_contact_by_id] ERP request error for contact_id=%s: %s",
+            contact_id,
+            exc,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="No se pudo conectar con el ERP",
+        ) from exc
+
+    data: Any = extract_erp_data(response.json())
+    if not data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Contacto {contact_id} no encontrado en el ERP",
+        )
+
+    contact = ContactInfo.model_validate(data)
+    logger.debug(
+        "[_get_contact_by_id] contact_id=%s phone=%s", contact_id, contact.phone
+    )
+    return contact
+
+
+def _is_within_whatsapp_window(last_user_message_created_at: datetime) -> bool:
+    """Verifica si el timestamp del último mensaje del usuario está dentro de la ventana de 24h de META.
+
+    Args:
+        last_user_message_created_at: Fecha/hora del último mensaje del usuario.
+
+    Returns:
+        True si el mensaje es más reciente que now - 24h.
+    """
+    cutoff = datetime.now(UTC).replace(tzinfo=None) - timedelta(
+        hours=WHATSAPP_WINDOW_HOURS
+    )
+    return last_user_message_created_at >= cutoff
+
+
+def _build_ticket_message(
+    decision: TicketDecision, ticket_id: str, observations: str | None
+) -> str:
+    """Construye el texto del mensaje de WhatsApp para una decisión de ticket.
+
+    Args:
+        decision: Estado de la decisión (approved/rejected/expired).
+        ticket_id: ID del ticket afectado.
+        observations: Observaciones opcionales del operador.
+
+    Returns:
+        Texto formateado listo para enviar por WhatsApp.
+    """
+    obs_text = f"{observations} " if observations else ""
+    template = _TICKET_MESSAGES[decision]
+    return template.format(ticket_id=ticket_id, observations=obs_text)
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+
+@router.post("/send-whatsapp", summary="Enviar mensaje de WhatsApp a un contacto")
+async def send_whatsapp_message(body: ERPSendMessageRequest) -> dict[str, str]:
+    """Recibe un contact_id y un mensaje, y lo envía por WhatsApp al contacto.
+
+    Verifica que el contacto tenga una ventana de conversación activa (24 h) en
+    META antes de enviar. Si la ventana está cerrada retorna un error 422.
+
+    Body:
+        - contact_id: ID del contacto en el ERP.
+        - message: Texto a enviar por WhatsApp.
+    """
+    logger.info("[send-whatsapp] contact_id=%s", body.contact_id)
+
+    # 1. Obtener teléfono del contacto desde el ERP
+    contact = await _get_contact_by_id(body.contact_id)
+    if not contact.phone:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"El contacto {body.contact_id} no tiene teléfono registrado en el ERP",
+        )
+
+    phone = contact.phone
+
+    # 2. Verificar ventana de 24h de META
+    last_msg = await services.get_last_user_message(phone)
+    if last_msg is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"No hay mensajes del usuario {phone} en la base de datos. "
+                "La ventana de 24h de META no está activa."
+            ),
+        )
+
+    if not _is_within_whatsapp_window(last_msg.created_at):  # type: ignore[attr-defined]
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"La ventana de mensajes gratuitos de 24h de META para {phone} ha expirado. "
+                "El último mensaje del usuario fue hace más de 24 horas."
+            ),
+        )
+
+    # 3. Enviar mensaje
+    ok = await whatsapp_manager.send_text(user_number=phone, text=body.message)
+    if not ok:
+        logger.error("[send-whatsapp] Error enviando WhatsApp a %s", phone)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Error al enviar el mensaje de WhatsApp a {phone}",
+        )
+
+    logger.info("[send-whatsapp] Mensaje enviado a %s", phone)
+    return {"status": "ok", "phone": phone}
+
+
+@router.post("/ticket-status", summary="Notificar al cliente el estado de su reserva")
+async def notify_ticket_status(body: ERPTicketStatusRequest) -> dict[str, str]:
+    """Informa al cliente por WhatsApp la aprobación, rechazo o expiración de su reserva.
+
+    Body:
+        - contact_id: ID del contacto en el ERP.
+        - ticket_id: ID del ticket afectado.
+        - new_status: Nuevo estado (approved | rejected | expired).
+        - observations: Texto adicional opcional del operador.
+    """
+    logger.info(
+        "[ticket-status] contact_id=%s ticket_id=%s new_status=%s",
+        body.contact_id,
+        body.ticket_id,
+        body.new_status,
+    )
+
+    # 1. Obtener teléfono del contacto
+    contact = await _get_contact_by_id(body.contact_id)
+    if not contact.phone:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"El contacto {body.contact_id} no tiene teléfono registrado en el ERP",
+        )
+
+    phone = contact.phone
+
+    # 2. Construir y enviar el mensaje
+    message = _build_ticket_message(body.new_status, body.ticket_id, body.observations)
+    ok = await whatsapp_manager.send_text(user_number=phone, text=message)
+    if not ok:
+        logger.error("[ticket-status] Error enviando WhatsApp a %s", phone)
+        await notify_error(
+            Exception(
+                f"Error al enviar notificación de ticket {body.ticket_id} a {phone}"
+            ),
+            context=f"notify_ticket_status | contact_id={body.contact_id}",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Error al enviar el mensaje de WhatsApp a {phone}",
+        )
+
+    logger.info(
+        "[ticket-status] Notificación enviada a %s (ticket=%s status=%s)",
+        phone,
+        body.ticket_id,
+        body.new_status,
+    )
+    return {"status": "ok", "phone": phone}
+
+
+@router.post(
+    "/activity-completed", summary="Enviar encuesta de satisfacción tras actividad"
+)
+async def activity_completed(body: ERPSurveyRequest) -> dict[str, str]:
+    """Notifica que se completó una actividad y envía una encuesta de satisfacción.
+
+    Body:
+        - contact_id: ID del contacto en el ERP.
+        - experience_id: ID de la experiencia completada.
+        - slot_id: ID del slot en que se realizó la actividad.
+        - ticket_id: ID del ticket asociado.
+
+    TODO: Implementar lógica de encuesta de satisfacción.
+    """
+    logger.info(
+        "[activity-completed] contact_id=%s experience_id=%s slot_id=%s ticket_id=%s",
+        body.contact_id,
+        body.experience_id,
+        body.slot_id,
+        body.ticket_id,
+    )
+    # Lógica pendiente de implementación
+    return {"status": "pending_implementation"}

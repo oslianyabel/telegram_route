@@ -44,7 +44,7 @@ async def list_experiences(
     """List bookable experiences from the ERP catalog.
 
     The ERP returns the canonical, filterable catalog.
-    Only experiences with status 'ONLINE' and company 'cheese' are fetched.
+    Only experiences with status 'ONLINE' are fetched.
 
     Args:
         ctx: Agent run context with dependencies.
@@ -67,7 +67,7 @@ async def list_experiences(
         "page": page,
         "page_size": page_size,
         "status": "ONLINE",
-        "company": "cheese",
+        "company": "",
     }
 
     if package_mode:

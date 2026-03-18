@@ -31,6 +31,7 @@ from chatbot.ai_agent.context import webhook_context_manager
 from chatbot.ai_agent.dependencies import AgentDeps
 from chatbot.ai_agent.error_agent import run_error_agent
 from chatbot.ai_agent.tools.ocr import extract_payment_receipt
+from chatbot.ai_agent.tools.payments import parse_amount, register_deposit_payment
 from chatbot.api.utils import message_handler, telegram_commands
 from chatbot.api.utils.telegram_commands import (
     cmd_get_availability,
@@ -47,7 +48,7 @@ from chatbot.api.utils.telegram_commands import (
 )
 from chatbot.api.utils.text import strip_markdown
 from chatbot.api.utils.webhook_parser import (
-    _format_receipt_as_text,
+    _TICKET_ID_RE,
     create_or_retrieve_images_dir,
 )
 from chatbot.core.config import config
@@ -151,7 +152,7 @@ async def _handle_restart(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def _handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Descarga la imagen recibida, ejecuta OCR y devuelve el resultado al usuario."""
+    """Descarga la imagen recibida, ejecuta OCR, registra el pago en el ERP y notifica al usuario."""
     if not update.message or not update.message.photo or not update.effective_chat:
         return
 
@@ -172,17 +173,96 @@ async def _handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await tg_file.download_to_drive(str(file_path))
         logger.info("[image] Saved Telegram image to %s", file_path)
 
+        # Extract ticket_id from caption if present
+        caption: str | None = update.message.caption
+        ticket_id: str | None = None
+        if caption:
+            match = _TICKET_ID_RE.search(caption)
+            if match:
+                ticket_id = match.group().upper()
+                logger.info("[image] Extracted ticket_id=%s from caption", ticket_id)
+            else:
+                logger.debug("[image] Caption present but no ticket_id: %r", caption)
+
         typing_task = asyncio.create_task(
             _typing_loop(context.bot, update.effective_chat.id)
         )
         try:
             receipt = await extract_payment_receipt(str(file_path))
-            ocr_text: str = _format_receipt_as_text(receipt)
         finally:
             typing_task.cancel()
 
-        logger.info("[image] OCR result for telegram_id=%s: %s", chat_id, ocr_text)
-        await update.message.reply_text(ocr_text)
+        # Log all extracted OCR fields
+        logger.info(
+            "[ocr] Extracted receipt data — "
+            "amount=%s | datetime=%s | reference=%s | destination_account=%s | "
+            "recipient_name=%s | payment_method=%s | branch=%s | concept=%s",
+            receipt.amount,
+            receipt.transaction_datetime,
+            receipt.reference,
+            receipt.destination_account,
+            receipt.recipient_name,
+            receipt.payment_method,
+            receipt.branch,
+            receipt.concept,
+        )
+
+        # Validate amount
+        amount = parse_amount(receipt.amount)
+        if amount is None:
+            logger.error(
+                "[receipt] Could not parse amount from receipt for telegram_id=%s amount_raw=%s",
+                chat_id,
+                receipt.amount,
+            )
+            await update.message.reply_text(
+                "No se pudo determinar el monto del comprobante. "
+                "Por favor verifica la imagen e inténtalo de nuevo."
+            )
+            return
+
+        if not ticket_id:
+            logger.warning(
+                "[receipt] No ticket_id in caption for telegram_id=%s", chat_id
+            )
+            await update.message.reply_text(
+                "Para registrar tu pago necesito el número de ticket (ej: TKT-2026-03-00018). "
+                "Por favor envía la imagen con el número de ticket como descripción."
+            )
+            return
+
+        assert erp_client is not None, "ERP client not initialized"
+        ocr_payload = receipt.model_dump(exclude_none=True)
+        result = await register_deposit_payment(
+            erp_client=erp_client,
+            ticket_id=ticket_id,
+            amount=amount,
+            ocr_payload=ocr_payload,
+        )
+        logger.info(
+            "[receipt] Payment registered — deposit_id=%s ticket_id=%s amount_paid=%.2f "
+            "amount_remaining=%.2f is_complete=%s",
+            result.deposit_id,
+            result.ticket_id,
+            result.amount_paid,
+            result.amount_remaining,
+            result.is_complete,
+        )
+        if result.is_complete:
+            reply = (
+                f"✅ Pago registrado exitosamente.\n"
+                f"Depósito: {result.deposit_id}\n"
+                f"Monto pagado: {result.amount_paid}\n"
+                f"Estado: Pago completado."
+            )
+        else:
+            reply = (
+                f"✅ Pago registrado exitosamente.\n"
+                f"Depósito: {result.deposit_id}\n"
+                f"Monto pagado: {result.amount_paid}\n"
+                f"Monto restante: {result.amount_remaining}"
+            )
+        await update.message.reply_text(reply)
 
     except Exception as exc:
         logger.exception("Error processing image for telegram_id=%s: %s", chat_id, exc)
@@ -191,7 +271,7 @@ async def _handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             context=f"telegram_bot._handle_image | chat_id={chat_id}",
         )
         await update.message.reply_text(
-            "Ocurrió un error al procesar la imagen. Por favor inténtalo de nuevo."
+            "Ocurrió un error al registrar el pago. Por favor inténtalo de nuevo."
         )
 
 

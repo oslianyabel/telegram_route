@@ -140,7 +140,9 @@ class Services:
 
     async def get_recent_messages(self, phone: str, hours: int = 24) -> list:
         """Return all messages for *phone* created within the last *hours* hours."""
-        since: datetime = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=hours)
+        since: datetime = datetime.now(UTC).replace(tzinfo=None) - timedelta(
+            hours=hours
+        )
         query = (
             message_table.select()
             .where(message_table.c.user_phone == phone)
@@ -150,6 +152,22 @@ class Services:
         if self.debug:
             logger.debug(query)
         return await self.database.fetch_all(query)
+
+    async def get_last_user_message(self, phone: str):
+        """Return the most recent message sent by the user (role='user').
+
+        Used to verify the META WhatsApp 24-hour free-messaging window.
+        """
+        query = (
+            message_table.select()
+            .where(message_table.c.user_phone == phone)
+            .where(message_table.c.role == "user")
+            .order_by(message_table.c.created_at.desc())
+            .limit(1)
+        )
+        if self.debug:
+            logger.debug(query)
+        return await self.database.fetch_one(query)
 
     async def get_pydantic_ai_history(
         self, phone: str, hours: int = 24
@@ -166,7 +184,7 @@ class Services:
             raw: str = row.message  # type: ignore[attr-defined]
             content = raw.removeprefix("Usuario - ").removeprefix("Bot - ")
             if role == "user":
-                history.append(ModelRequest(parts=[UserPromptPart(content=content)]))
+                history.append(ModelRequest(parts=[UserPromptPart(content=content)]))  # type: ignore
             elif role == "assistant":
                 history.append(
                     ModelResponse(
