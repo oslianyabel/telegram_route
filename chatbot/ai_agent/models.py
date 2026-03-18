@@ -942,7 +942,7 @@ class PaymentReceipt(BaseModel):
             "Busca etiquetas como 'Monto depositado', 'Total', 'Monto', 'Amount'."
         ),
     )
-    transaction_datetime: str | None = Field(
+    date: str | None = Field(
         None,
         description=(
             "Fecha y hora de la transacción en formato DD/MM/YYYY HH:MM:SS. "
@@ -956,7 +956,7 @@ class PaymentReceipt(BaseModel):
             "que identifica de forma única la operación."
         ),
     )
-    destination_account: str | None = Field(
+    account: str | None = Field(
         None,
         description="Número de cuenta, IBAN o información del destinatario.",
     )

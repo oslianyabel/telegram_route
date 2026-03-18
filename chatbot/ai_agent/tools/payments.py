@@ -73,6 +73,11 @@ async def register_deposit_payment(
         httpx.HTTPStatusError: If the ERP returns an HTTP error.
         ValueError: If the ERP returns an unsuccessful response.
     """
+    # Normalize the `amount` field inside ocr_payload to float.
+    # The ERP rejects raw OCR strings like "40.00 Bs.".
+    if ocr_payload:
+        ocr_payload["amount"] = parse_amount(ocr_payload["amount"])
+
     logger.info(
         "[register_deposit_payment] ticket_id=%s amount=%.2f ocr_payload=%s",
         ticket_id,
@@ -93,6 +98,11 @@ async def register_deposit_payment(
 
     if response.is_error:
         error_msg = extract_erp_error(response.json())
+        logger.error(
+            "[register_deposit_payment] ERP error response status=%s body=%s",
+            response.status_code,
+            response.text,
+        )
         raise ValueError(
             f"ERP error registering deposit for ticket {ticket_id}: {error_msg}"
         )

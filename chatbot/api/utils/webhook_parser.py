@@ -290,12 +290,12 @@ async def _extract_image_from_message(
     # Log all extracted OCR fields
     logger.info(
         "[ocr] Extracted receipt data — "
-        "amount=%s | datetime=%s | reference=%s | destination_account=%s | "
+        "amount=%s | date=%s | reference=%s | account=%s | "
         "recipient_name=%s | payment_method=%s | branch=%s | concept=%s",
         receipt.amount,
-        receipt.transaction_datetime,
+        receipt.date,
         receipt.reference,
-        receipt.destination_account,
+        receipt.account,
         receipt.recipient_name,
         receipt.payment_method,
         receipt.branch,
@@ -319,9 +319,9 @@ def _format_receipt_as_text(receipt: PaymentReceipt) -> str:
     """Convierte un PaymentReceipt en texto plano legible."""
     field_labels: list[tuple[str, str]] = [
         ("amount", "Monto"),
-        ("transaction_datetime", "Fecha/Hora"),
+        ("date", "Fecha/Hora"),
         ("reference", "Referencia"),
-        ("destination_account", "Cuenta destino"),
+        ("account", "Cuenta destino"),
         ("recipient_name", "Beneficiario"),
         ("payment_method", "Metodo de pago"),
         ("branch", "Sucursal"),

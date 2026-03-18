@@ -195,12 +195,12 @@ async def _handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         # Log all extracted OCR fields
         logger.info(
             "[ocr] Extracted receipt data — "
-            "amount=%s | datetime=%s | reference=%s | destination_account=%s | "
+            "amount=%s | date=%s | reference=%s | account=%s | "
             "recipient_name=%s | payment_method=%s | branch=%s | concept=%s",
             receipt.amount,
-            receipt.transaction_datetime,
+            receipt.date,
             receipt.reference,
-            receipt.destination_account,
+            receipt.account,
             receipt.recipient_name,
             receipt.payment_method,
             receipt.branch,

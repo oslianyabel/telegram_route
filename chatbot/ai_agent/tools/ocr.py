@@ -44,9 +44,9 @@ deja en null los que no aparezcan.
 
 Campos requeridos:
 - amount: Monto total depositado/pagado (busca "Monto depositado", "Total", "Bs.", etc.)
-- transaction_datetime: Fecha y hora de la transacción (formato DD/MM/YYYY HH:MM:SS)
+- date: Fecha y hora de la transacción (formato DD/MM/YYYY HH:MM:SS)
 - reference: Número de referencia, barcode o código de transacción
-- destination_account: Número de cuenta o información del destinatario
+- account: Número de cuenta o información del destinatario
 - recipient_name: Nombre de la empresa o persona que recibe el pago
 - payment_method: Tipo de pago (Efectivo, Transferencia, Tarjeta, etc.)
 - branch: Subagencia, sucursal o ubicación donde se realizó el pago
