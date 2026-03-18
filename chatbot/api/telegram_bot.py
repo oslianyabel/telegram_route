@@ -30,6 +30,7 @@ from chatbot.ai_agent import get_cheese_agent
 from chatbot.ai_agent.context import webhook_context_manager
 from chatbot.ai_agent.dependencies import AgentDeps
 from chatbot.ai_agent.error_agent import run_error_agent
+from chatbot.ai_agent.summary_agent import summarize_conversation
 from chatbot.ai_agent.tools.ocr import extract_payment_receipt
 from chatbot.ai_agent.tools.payments import (
     erp_validation_user_message,
@@ -63,6 +64,8 @@ from chatbot.messaging.telegram_notifier import notify_error
 from chatbot.messaging.whatsapp import WhatsAppClient
 
 logger = logging.getLogger(__name__)
+
+HISTORY_SUMMARY_THRESHOLD: int = 30
 
 # ---------------------------------------------------------------------------
 # ERP client — created in post_init, closed in post_shutdown
@@ -103,6 +106,33 @@ def _extract_tools_used(result) -> list[str]:
                 if isinstance(part, ToolCallPart):
                     tools.append(part.tool_name)
     return tools
+
+
+async def _maybe_compress_history(chat_id: str, history_len: int) -> None:
+    """Compress conversation history for Telegram when it exceeds threshold.
+
+    Generates a summary, clears the stored history and saves the summary as
+    a system message so the agent preserves context without the long history.
+    """
+    total = history_len + 2  # +1 user +1 assistant for the current turn
+    if total <= HISTORY_SUMMARY_THRESHOLD:
+        return
+
+    logger.info(
+        "[history] Compressing history for telegram_id=%s (%d messages > %d threshold)",
+        chat_id,
+        total,
+        HISTORY_SUMMARY_THRESHOLD,
+    )
+    try:
+        chat_str = await services.get_chat_str(chat_id)
+        summary = await summarize_conversation(chat_str)
+        await services.reset_chat(chat_id)
+        await services.create_message(phone=chat_id, role="system", message=summary)
+        logger.info("[history] History compressed for %s", chat_id)
+    except Exception as exc:
+        logger.error("[history] Failed to compress history for %s: %s", chat_id, exc)
+        await notify_error(exc, context=f"_maybe_compress_history | chat_id={chat_id}")
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +412,7 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
             await message_handler.save_assistant_msg(chat_id, ai_response, tools_used)
             await update.message.reply_text(ai_response)
+            asyncio.create_task(_maybe_compress_history(chat_id, len(history)))
 
         finally:
             typing_task.cancel()
