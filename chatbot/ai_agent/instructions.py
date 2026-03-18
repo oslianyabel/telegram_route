@@ -9,6 +9,7 @@ from chatbot.ai_agent.dependencies import AgentDeps
 from chatbot.ai_agent.models import (
     ERP_BASE_PATH,
     ContactInfo,
+    CustomerItinerary,
 )
 from chatbot.ai_agent.tools.erp_utils import extract_erp_data
 
@@ -63,3 +64,44 @@ async def resolve_or_create_contact(
         lines.append(f"Teléfono: {ctx.deps.user_phone}.")
 
     return "\n".join(lines)
+
+
+async def get_current_itinerary_context(
+    ctx: RunContext[AgentDeps],
+) -> str:
+    """Retrieves the customer's itinerary to provide context.
+
+    Args:
+        ctx: Agent run context with dependencies.
+    """
+    if not ctx.deps.contact_id:
+        return "No hay información de itinerario disponible (contacto no resuelto)."
+
+    try:
+        response = await ctx.deps.erp_client.post(
+            f"{ERP_BASE_PATH}.itinerary_controller.get_customer_itinerary",
+            json={"contact_id": ctx.deps.contact_id},
+            timeout=ERP_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        data: dict[str, Any] = extract_erp_data(response.json())
+        itinerary = CustomerItinerary.model_validate(data)
+
+        if itinerary.total_reservations == 0:
+            return "El cliente no tiene reservaciones ni itinerario registrado."
+
+        lines = [f"## Itinerario del cliente (Total: {itinerary.total_reservations})"]
+        for item in itinerary.itinerary:
+            item_title = (
+                f"Ruta: {item.route_name}" if item.type == "route" else "Experiencia"
+            )
+            lines.append(f"- {item_title} ({len(item.reservations)} paradas/tickets):")
+            for res in item.reservations:
+                lines.append(
+                    f"  * {res.reservation_id}: {res.experience_name} - {res.date} {res.time} [{res.status}]"
+                )
+
+        return "\n".join(lines)
+    except Exception as e:
+        logger.error("Error retrieving itinerary context: %s", e)
+        return "Error al recuperar el itinerario del cliente."

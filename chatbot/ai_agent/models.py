@@ -1030,3 +1030,44 @@ class ERPSurveyRequest(BaseModel):
     experience_id: str
     slot_id: str
     ticket_id: str
+
+
+# ---------------------------------------------------------------------------
+# 14. Itinerary
+# ---------------------------------------------------------------------------
+
+
+class ReservationBrief(BaseModel):
+    """Brief detail of a reservation within an itinerary."""
+
+    reservation_id: str
+    type: str
+    experience_id: str | None = None
+    experience_name: str | None = None
+    date: str | None = None
+    time: str | None = None
+    status: str
+    party_size: int
+    qr_status: str | None = None
+    checked_in: bool = False
+    checked_in_at: datetime | None = None
+
+
+class ItineraryItem(BaseModel):
+    """A route or standalone experience in the customer's itinerary."""
+
+    type: str
+    route_id: str | None = None
+    route_name: str | None = None
+    reservations: list[ReservationBrief] = Field(default_factory=list)
+    reservations_count: int = 0
+
+
+class CustomerItinerary(BaseModel):
+    """Full itinerary for a customer."""
+
+    contact_id: str
+    itinerary: list[ItineraryItem] = Field(default_factory=list)
+    total_reservations: int = 0
+    upcoming_count: int = 0
+    completed_count: int = 0

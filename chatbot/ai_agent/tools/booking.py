@@ -9,6 +9,7 @@ from chatbot.ai_agent.dependencies import AgentDeps
 from chatbot.ai_agent.models import (
     ERP_BASE_PATH,
     CancellationResult,
+    CustomerItinerary,
     ModificationResult,
     PendingRouteBooking,
     PendingTicket,
@@ -386,3 +387,41 @@ async def cancel_reservation(
         result.new_status,
     )
     return result
+
+
+# ------------------------------------------------------------------
+# 6. Get customer itinerary
+# ------------------------------------------------------------------
+
+
+async def get_customer_itinerary(
+    ctx: RunContext[AgentDeps],
+) -> CustomerItinerary:
+    """Get the full travel itinerary for the customer.
+
+    Includes all routes and standalone experience reservations, both upcoming
+    and completed. Use this to give the user an overview of their plans.
+    Requires a resolved contact_id in deps.
+
+    Args:
+        ctx: Agent run context with dependencies.
+    """
+    logger.info("[get_customer_itinerary] contact_id=%s", ctx.deps.contact_id)
+    if not ctx.deps.contact_id:
+        raise ValueError(
+            "contact_id is required in AgentDeps to retrieve the itinerary"
+        )
+
+    response = await ctx.deps.erp_client.post(
+        f"{ERP_BASE_PATH}.itinerary_controller.get_customer_itinerary",
+        json={"contact_id": ctx.deps.contact_id},
+        timeout=ERP_TIMEOUT_SECONDS,
+    )
+    response.raise_for_status()
+    data: dict[str, Any] = extract_erp_data(response.json())
+
+    itinerary = CustomerItinerary.model_validate(data)
+    logger.info(
+        "Itinerary retrieved: total_reservations=%d", itinerary.total_reservations
+    )
+    return itinerary

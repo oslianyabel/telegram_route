@@ -9,7 +9,10 @@ from pydantic_ai.settings import ModelSettings
 from pydantic_ai.tools import ToolDefinition
 
 from chatbot.ai_agent.dependencies import AgentDeps
-from chatbot.ai_agent.instructions import resolve_or_create_contact
+from chatbot.ai_agent.instructions import (
+    get_current_itinerary_context,
+    resolve_or_create_contact,
+)
 from chatbot.ai_agent.models import GoogleModel
 from chatbot.ai_agent.prompts import SYSTEM_PROMPT
 from chatbot.ai_agent.tools.booking import (
@@ -37,6 +40,7 @@ from chatbot.ai_agent.tools.customer import (
     upsert_lead,
 )
 from chatbot.ai_agent.tools.date_resolver import resolve_relative_date
+from chatbot.ai_agent.tools.payments import get_payment_instructions
 from chatbot.ai_agent.tools.support import create_complaint
 
 logger = logging.getLogger(__name__)
@@ -83,6 +87,8 @@ AGENT_TOOLS = [
     # Route reservations
     create_route_reservation,
     get_route_booking_status,
+    # Payments
+    get_payment_instructions,
     # Date resolution sub-agent
     resolve_relative_date,
     # Support & complaints
@@ -121,11 +127,18 @@ def get_cheese_agent() -> Agent[AgentDeps, str]:
                 "el mes que viene, dentro de N días, etc."
             )
 
+
         @_cheese_agent.instructions
         async def resolve_or_create_contact_instruction(
             ctx: RunContext[AgentDeps],
         ) -> str:
             return await resolve_or_create_contact(ctx)
+
+        @_cheese_agent.instructions
+        async def itinerary_context_instruction(
+            ctx: RunContext[AgentDeps],
+        ) -> str:
+            return await get_current_itinerary_context(ctx)
 
         @_cheese_agent.system_prompt
         async def list_experiences_prompt(
