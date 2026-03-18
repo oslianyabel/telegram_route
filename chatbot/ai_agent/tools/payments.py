@@ -26,28 +26,76 @@ ERP_TIMEOUT_SECONDS = 15.0
 # Regex to extract a float amount from a receipt string like "40.00 Bs.", "$40", etc.
 _AMOUNT_RE = re.compile(r"[\d]+(?:[.,]\d+)?")
 
+# ERP VALIDATION_ERROR messages that are caused by business rules (not bugs)
+_ERP_VALIDATION_MESSAGES: dict[str, str] = {
+    "cannot exceed": "El monto del comprobante supera el monto requerido para el depósito.",
+    "PAID deposit": "El depósito ya fue pagado completamente.",
+    "already paid": "El depósito ya fue pagado completamente.",
+}
+
 
 def parse_amount(amount_str: str | None) -> float | None:
-    """Parse a raw amount string from OCR into a float.
+    """Parse a raw OCR amount string into a float.
 
-    Strips currency symbols and locale-specific separators, then casts to float.
+    Handles common international formats:
+    - European: 1.234,56 or 1.234  (dot=thousands, comma=decimal)
+    - US/UK:    1,234.56 or 1,234  (comma=thousands, dot=decimal)
+    - Plain:    1234.56 or 1234,56
+
     Returns None if parsing fails or the input is None.
     """
     if not amount_str:
         return None
-    # Replace comma decimal separator with dot only if there's a single comma
-    cleaned = (
-        amount_str.replace(",", ".")
-        if amount_str.count(",") == 1
-        else amount_str.replace(",", "")
-    )
-    match = _AMOUNT_RE.search(cleaned)
-    if not match:
+
+    # Strip everything except digits, dots and commas
+    s = re.sub(r"[^\d.,]", "", amount_str).strip(".,")
+    if not s:
         return None
+
+    has_dot = "." in s
+    has_comma = "," in s
+
+    if has_dot and has_comma:
+        # Whichever separator appears last is the decimal one
+        if s.rindex(".") > s.rindex(","):
+            # US format: 1,234.56 → remove commas
+            s = s.replace(",", "")
+        else:
+            # European format: 1.234,56 → remove dots, comma → dot
+            s = s.replace(".", "").replace(",", ".")
+    elif has_comma:
+        parts = s.split(",")
+        if len(parts) == 2 and len(parts[-1]) <= 2:  # noqa: PLR2004
+            # Decimal comma: 200,50 → 200.50
+            s = s.replace(",", ".")
+        else:
+            # Thousands comma: 27,500 → 27500
+            s = s.replace(",", "")
+    elif has_dot:
+        parts = s.split(".")
+        if len(parts) == 2 and len(parts[-1]) <= 2:  # noqa: PLR2004
+            # Decimal dot: 200.50 → already correct
+            pass
+        else:
+            # Thousands dot(s): 27.500 or 1.234.567 → remove
+            s = s.replace(".", "")
+
     try:
-        return float(match.group())
+        return float(s)
     except ValueError:
         return None
+
+
+def erp_validation_user_message(exc: ValueError) -> str | None:
+    """Return a user-friendly message if the error is a known ERP business-rule rejection.
+
+    Returns None when the error is unexpected and should be escalated.
+    """
+    msg = str(exc)
+    for key, user_msg in _ERP_VALIDATION_MESSAGES.items():
+        if key in msg:
+            return user_msg
+    return None
 
 
 async def register_deposit_payment(

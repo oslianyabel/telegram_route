@@ -20,6 +20,7 @@ from chatbot.ai_agent.dependencies import AgentDeps
 from chatbot.ai_agent.models import DepositPaymentResult, PaymentInstructions
 from chatbot.ai_agent.tools.payments import (
     get_payment_instructions,
+    parse_amount,
     register_deposit_payment,
 )
 
@@ -38,6 +39,45 @@ _SAMPLE_OCR_PAYLOAD: dict = {
     "branch": "Subagencia Centro",
     "concept": "Depósito de reserva",
 }
+
+
+# ---------------------------------------------------------------------------
+# parse_amount — unit tests (sin red)
+# ---------------------------------------------------------------------------
+
+
+# uv run pytest -s chatbot/ai_agent/tests/test_payments.py::test_parse_amount
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # Formato europeo: punto=miles, coma=decimal
+        ("27.500,00 Bs.", 27500.0),
+        ("1.234,56", 1234.56),
+        ("27.500", 27500.0),  # miles sin decimal
+        # Formato US: coma=miles, punto=decimal
+        ("27,500.00", 27500.0),
+        ("1,234.56", 1234.56),
+        # Coma como decimal (sin separador de miles)
+        ("200,00", 200.0),
+        ("40,5", 40.5),
+        # Punto como decimal
+        ("40.00 Bs.", 40.0),
+        ("200.50", 200.5),
+        # Sin separadores
+        ("27500", 27500.0),
+        ("200", 200.0),
+        # Con símbolos de moneda
+        ("$ 40.00", 40.0),
+        ("Bs. 200,00", 200.0),
+        # Inválidos
+        (None, None),
+        ("", None),
+        ("sin monto", None),
+    ],
+)
+def test_parse_amount(raw: str | None, expected: float | None) -> None:
+    """Debe convertir strings OCR de montos a float correctamente."""
+    assert parse_amount(raw) == expected
 
 
 # ---------------------------------------------------------------------------

@@ -31,7 +31,11 @@ from chatbot.ai_agent.context import webhook_context_manager
 from chatbot.ai_agent.dependencies import AgentDeps
 from chatbot.ai_agent.error_agent import run_error_agent
 from chatbot.ai_agent.tools.ocr import extract_payment_receipt
-from chatbot.ai_agent.tools.payments import parse_amount, register_deposit_payment
+from chatbot.ai_agent.tools.payments import (
+    erp_validation_user_message,
+    parse_amount,
+    register_deposit_payment,
+)
 from chatbot.api.utils import message_handler, telegram_commands
 from chatbot.api.utils.telegram_commands import (
     cmd_get_availability,
@@ -233,12 +237,26 @@ async def _handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
         assert erp_client is not None, "ERP client not initialized"
         ocr_payload = receipt.model_dump(exclude_none=True)
-        result = await register_deposit_payment(
-            erp_client=erp_client,
-            ticket_id=ticket_id,
-            amount=amount,
-            ocr_payload=ocr_payload,
-        )
+        try:
+            result = await register_deposit_payment(
+                erp_client=erp_client,
+                ticket_id=ticket_id,
+                amount=amount,
+                ocr_payload=ocr_payload,
+            )
+        except ValueError as exc:
+            user_msg = erp_validation_user_message(exc)
+            if user_msg:
+                logger.warning(
+                    "[receipt] ERP validation error for telegram_id=%s ticket=%s: %s",
+                    chat_id,
+                    ticket_id,
+                    exc,
+                )
+                await update.message.reply_text(f"⚠️ {user_msg}")
+                return
+            raise
+
         logger.info(
             "[receipt] Payment registered — deposit_id=%s ticket_id=%s amount_paid=%.2f "
             "amount_remaining=%.2f is_complete=%s",

@@ -17,7 +17,11 @@ from chatbot.ai_agent.context import webhook_context_manager
 from chatbot.ai_agent.dependencies import AgentDeps
 from chatbot.ai_agent.error_agent import run_error_agent
 from chatbot.ai_agent.summary_agent import summarize_conversation
-from chatbot.ai_agent.tools.payments import parse_amount, register_deposit_payment
+from chatbot.ai_agent.tools.payments import (
+    erp_validation_user_message,
+    parse_amount,
+    register_deposit_payment,
+)
 from chatbot.api.utils import message_handler
 from chatbot.api.utils.message_queue import Message, message_queue
 from chatbot.api.utils.text import strip_markdown
@@ -327,32 +331,41 @@ async def _process_image_receipt(
             amount=amount,
             ocr_payload=ocr_payload,
         )
-        logger.info(
-            "[receipt] Payment registered — deposit_id=%s ticket_id=%s amount_paid=%.2f "
-            "amount_remaining=%.2f is_complete=%s",
-            result.deposit_id,
-            result.ticket_id,
-            result.amount_paid,
-            result.amount_remaining,
-            result.is_complete,
+    except ValueError as exc:
+        user_msg = erp_validation_user_message(exc)
+        if user_msg:
+            logger.warning(
+                "[receipt] ERP validation error for user=%s ticket=%s: %s",
+                user_number,
+                ticket_id,
+                exc,
+            )
+            await whatsapp_manager.send_text(
+                user_number=user_number,
+                text=f"⚠️ {user_msg}",
+                message_id=message_id,
+            )
+            return
+        logger.error(
+            "[receipt] Failed to register payment for user=%s ticket=%s: %s",
+            user_number,
+            ticket_id,
+            exc,
+            exc_info=True,
         )
-        if result.is_complete:
-            msg = (
-                f"✅ Pago registrado exitosamente.\n"
-                f"Depósito: {result.deposit_id}\n"
-                f"Monto pagado: {result.amount_paid}\n"
-                f"Estado: Pago completado."
-            )
-        else:
-            msg = (
-                f"✅ Pago registrado exitosamente.\n"
-                f"Depósito: {result.deposit_id}\n"
-                f"Monto pagado: {result.amount_paid}\n"
-                f"Monto restante: {result.amount_remaining}"
-            )
+        await notify_error(
+            exc,
+            context=f"_process_image_receipt | user={user_number} | ticket={ticket_id}",
+        )
         await whatsapp_manager.send_text(
-            user_number=user_number, text=msg, message_id=message_id
+            user_number=user_number,
+            text=(
+                "Ocurrió un error al registrar tu pago en el sistema. "
+                "Por favor inténtalo de nuevo o escala tu solicitud a un humano."
+            ),
+            message_id=message_id,
         )
+        return
     except Exception as exc:
         logger.error(
             "[receipt] Failed to register payment for user=%s ticket=%s: %s",
@@ -373,3 +386,31 @@ async def _process_image_receipt(
             ),
             message_id=message_id,
         )
+        return
+
+    logger.info(
+        "[receipt] Payment registered — deposit_id=%s ticket_id=%s amount_paid=%.2f "
+        "amount_remaining=%.2f is_complete=%s",
+        result.deposit_id,
+        result.ticket_id,
+        result.amount_paid,
+        result.amount_remaining,
+        result.is_complete,
+    )
+    if result.is_complete:
+        msg = (
+            f"✅ Pago registrado exitosamente.\n"
+            f"Depósito: {result.deposit_id}\n"
+            f"Monto pagado: {result.amount_paid}\n"
+            f"Estado: Pago completado."
+        )
+    else:
+        msg = (
+            f"✅ Pago registrado exitosamente.\n"
+            f"Depósito: {result.deposit_id}\n"
+            f"Monto pagado: {result.amount_paid}\n"
+            f"Monto restante: {result.amount_remaining}"
+        )
+    await whatsapp_manager.send_text(
+        user_number=user_number, text=msg, message_id=message_id
+    )
