@@ -3,6 +3,7 @@
 Uses the Telegram Bot API directly via httpx (no extra dependency needed).
 Configure TELEGRAM_BOT_TOKEN and TELEGRAM_DEV_CHAT_ID in the .env file.
 """
+
 from __future__ import annotations
 
 import logging
@@ -179,3 +180,37 @@ async def notify_slow_response(
             )
     except httpx.HTTPError as http_err:
         logger.error(f"Failed to send slow response Telegram notification: {http_err}")
+
+
+async def send_message(chat_id: str, text: str) -> bool:
+    """Envía un mensaje de texto a cualquier chat de Telegram.
+
+    Args:
+        chat_id: ID del chat de Telegram del destinatario.
+        text: Texto a enviar.
+
+    Returns:
+        True si el mensaje se envió correctamente, False en caso de error.
+    """
+    logger.debug("[send_message] chat_id=%s", chat_id)
+    url = TELEGRAM_API_URL.format(token=config.TELEGRAM_BOT_TOKEN)
+    try:
+        async with httpx.AsyncClient(timeout=_SEND_TIMEOUT) as client:
+            response = await client.post(
+                url,
+                json={"chat_id": chat_id, "text": text},
+            )
+            if not response.is_success:
+                logger.error(
+                    "[send_message] Telegram error: %s %s",
+                    response.status_code,
+                    response.text[:200],
+                )
+                return False
+            logger.info("[send_message] Mensaje enviado a chat_id=%s", chat_id)
+            return True
+    except httpx.HTTPError as exc:
+        logger.error(
+            "[send_message] HTTP error enviando a chat_id=%s: %s", chat_id, exc
+        )
+        return False

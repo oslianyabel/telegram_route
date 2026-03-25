@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from pydantic_ai import AgentRunResult
-from pydantic_ai.exceptions import ModelAPIError
+from pydantic_ai.exceptions import ModelAPIError, UsageLimitExceeded
 from pydantic_ai.messages import ModelResponse, ToolCallPart
 
 from chatbot.ai_agent import get_cheese_agent
@@ -169,6 +169,32 @@ async def _process_message(message: Message) -> None:
                 provider_error = f"{type(provider_exc).__name__}: {provider_exc}"
                 result = await agent.run(
                     incoming_msg, deps=deps, message_history=history
+                )
+            except UsageLimitExceeded as ule:
+                logger.warning(
+                    "UsageLimitExceeded for %s: %s. Summarizing history and retrying...",
+                    user_number,
+                    ule,
+                )
+                await notify_error(
+                    ule,
+                    context=f"_process_message | user={user_number} | msg={incoming_msg[:200]} | action=summary_retry",
+                )
+                chat_str = await services.get_chat_str(user_number)
+                summary = await summarize_conversation(chat_str)
+                await services.reset_chat(user_number)
+                await services.create_message(
+                    phone=user_number, role="system", message=summary
+                )
+                logger.info(
+                    "[history] Summarized history and saved system message for %s",
+                    user_number,
+                )
+                new_history = await services.get_pydantic_ai_history(
+                    user_number, hours=24
+                )
+                result = await agent.run(
+                    incoming_msg, deps=deps, message_history=new_history
                 )
 
             response_time = time.monotonic() - agent_start

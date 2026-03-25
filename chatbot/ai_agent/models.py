@@ -1006,6 +1006,17 @@ class ERPSendMessageRequest(BaseModel):
     message: str
 
 
+class ERPSendTelegramRequest(BaseModel):
+    """Body for /erp/send-telegram endpoint.
+
+    The ERP sends this when it wants to push a free-text message to a contact
+    via Telegram. contact_id must be the Telegram chat ID of the recipient.
+    """
+
+    contact_id: str
+    message: str
+
+
 class ERPTicketStatusRequest(BaseModel):
     """Body for /erp/ticket-status endpoint.
 

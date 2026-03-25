@@ -16,6 +16,7 @@ import asyncio
 import logging
 
 import httpx
+from pydantic_ai.exceptions import UsageLimitExceeded
 from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import (
@@ -385,6 +386,62 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 )
                 ai_response: str = strip_markdown(result.output)
                 tools_used = _extract_tools_used(result)
+            except UsageLimitExceeded as ule:
+                logger.warning(
+                    "UsageLimitExceeded for telegram_id=%s: %s. Summarizing history and retrying...",
+                    chat_id,
+                    ule,
+                )
+                await notify_error(
+                    ule,
+                    context=f"_process_message | user={chat_id} | msg={incoming_msg[:200]} | action=summary_retry",
+                )
+                try:
+                    chat_str = await services.get_chat_str(chat_id)
+                    summary = await summarize_conversation(chat_str)
+                    await services.reset_chat(chat_id)
+                    await services.create_message(
+                        phone=chat_id, role="system", message=summary
+                    )
+                    logger.info(
+                        "[history] Summarized history and saved system message for %s",
+                        chat_id,
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "Failed to summarize history for %s: %s", chat_id, exc
+                    )
+                # Retry once with the compressed history
+                try:
+                    new_history = await services.get_pydantic_ai_history(
+                        chat_id, hours=24
+                    )
+                    result = await agent.run(
+                        incoming_msg, deps=deps, message_history=new_history
+                    )
+                    ai_response = strip_markdown(result.output)
+                    tools_used = _extract_tools_used(result)
+                except Exception as retry_exc:
+                    logger.error(
+                        "Retry after summary failed for %s: %s",
+                        chat_id,
+                        retry_exc,
+                        exc_info=True,
+                    )
+                    await notify_error(
+                        retry_exc,
+                        context=f"_process_message | user={chat_id} | msg={incoming_msg[:200]} | action=retry_failed",
+                    )
+                    try:
+                        explanation = await run_error_agent(str(retry_exc))
+                        ai_response = explanation.user_message
+                    except Exception as explainer_exc:
+                        logger.error("Error agent also failed: %s", explainer_exc)
+                        ai_response = (
+                            "Ocurrió un error al procesar tu mensaje. "
+                            "Por favor inténtalo de nuevo o escribe /restart."
+                        )
+                    tools_used = []
             except Exception as agent_exc:
                 logger.error(
                     "Agent error for telegram_id=%s: %s",

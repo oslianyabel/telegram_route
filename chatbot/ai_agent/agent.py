@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 
 from pydantic_ai import Agent, RunContext, Tool
 from pydantic_ai.settings import ModelSettings
@@ -14,7 +15,6 @@ from chatbot.ai_agent.instructions import (
     resolve_or_create_contact,
 )
 from chatbot.ai_agent.models import GoogleModel
-from chatbot.ai_agent.prompts import SYSTEM_PROMPT
 from chatbot.ai_agent.tools.booking import (
     cancel_reservation,
     confirm_modification,
@@ -45,6 +45,12 @@ from chatbot.ai_agent.tools.support import create_complaint
 
 logger = logging.getLogger(__name__)
 ERP_TIMEOUT_SECONDS = 15.0
+
+PROMPT_FILE: Path = Path("static/prompt.txt")
+
+
+def _load_system_prompt() -> str:
+    return PROMPT_FILE.read_text(encoding="utf-8")
 
 
 def _once_per_turn(tool_name: str):
@@ -103,13 +109,21 @@ AGENT_TOOLS = [
 _cheese_agent: Agent[AgentDeps, str] | None = None
 
 
+def reset_cheese_agent() -> None:
+    """Descarta el singleton para que la próxima llamada lo recree con el prompt actualizado."""
+    global _cheese_agent  # noqa: PLW0603
+    _cheese_agent = None
+    logger.info("[reset_cheese_agent] Singleton descartado")
+
+
 def get_cheese_agent() -> Agent[AgentDeps, str]:
     """Return the singleton cheese agent, creating it on first call."""
     global _cheese_agent  # noqa: PLW0603
     if _cheese_agent is None:
+        system_prompt = _load_system_prompt()
         _cheese_agent = Agent(
             model=GoogleModel.Gemini_Flash_Latest,
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             deps_type=AgentDeps,
             tools=AGENT_TOOLS,
             model_settings=ModelSettings(temperature=0),
@@ -126,7 +140,6 @@ def get_cheese_agent() -> Agent[AgentDeps, str]:
                 "Usa esta fecha para resolver expresiones como mañana, la semana que viene, "
                 "el mes que viene, dentro de N días, etc."
             )
-
 
         @_cheese_agent.instructions
         async def resolve_or_create_contact_instruction(
