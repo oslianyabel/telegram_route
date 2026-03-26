@@ -12,12 +12,15 @@ from chatbot.ai_agent.models import (
     ERPSendMessageRequest,
     ERPSendTelegramRequest,
     ERPSurveyRequest,
+    ERPTelegramControlRequest,
     ERPTicketStatusRequest,
+    ERPWhatsAppControlRequest,
     TicketDecision,
 )
 from chatbot.ai_agent.tools.erp_utils import extract_erp_data
 from chatbot.api.utils.security import get_api_key
 from chatbot.api.whatsapp_router import erp_client
+from chatbot.core import human_control
 from chatbot.db.services import services
 from chatbot.messaging.telegram_notifier import notify_error
 from chatbot.messaging.telegram_notifier import send_message as send_telegram
@@ -281,6 +284,77 @@ async def notify_ticket_status(body: ERPTicketStatusRequest) -> dict[str, str]:
         body.new_status,
     )
     return {"status": "ok", "phone": phone}
+
+
+# ---------------------------------------------------------------------------
+# Endpoints de control humano de conversaciones
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/take-control/whatsapp",
+    summary="Tomar control de una conversación de WhatsApp",
+)
+async def take_whatsapp_control(body: ERPWhatsAppControlRequest) -> dict[str, str]:
+    """Desactiva las respuestas automáticas del bot para el número de WhatsApp indicado.
+
+    El operador podrá responder manualmente al cliente hasta que se llame
+    a /release-control/whatsapp con el mismo número.
+
+    Body:
+        - phone: Número de WhatsApp del cliente (ej: +59899000000).
+    """
+    logger.info("[take-control/whatsapp] phone=%s", body.phone)
+    human_control.take_whatsapp_control(body.phone)
+    return {"status": "controlled", "phone": body.phone}
+
+
+@router.post(
+    "/release-control/whatsapp",
+    summary="Ceder control de una conversación de WhatsApp al bot",
+)
+async def release_whatsapp_control(body: ERPWhatsAppControlRequest) -> dict[str, str]:
+    """Reactiva las respuestas automáticas del bot para el número de WhatsApp indicado.
+
+    Body:
+        - phone: Número de WhatsApp del cliente (ej: +59899000000).
+    """
+    logger.info("[release-control/whatsapp] phone=%s", body.phone)
+    human_control.release_whatsapp_control(body.phone)
+    return {"status": "released", "phone": body.phone}
+
+
+@router.post(
+    "/take-control/telegram",
+    summary="Tomar control de una conversación de Telegram",
+)
+async def take_telegram_control(body: ERPTelegramControlRequest) -> dict[str, str]:
+    """Desactiva las respuestas automáticas del bot para el chat de Telegram indicado.
+
+    El operador podrá responder manualmente al cliente hasta que se llame
+    a /release-control/telegram con el mismo chat_id.
+
+    Body:
+        - chat_id: Telegram chat ID del cliente.
+    """
+    logger.info("[take-control/telegram] chat_id=%s", body.chat_id)
+    human_control.take_telegram_control(body.chat_id)
+    return {"status": "controlled", "chat_id": body.chat_id}
+
+
+@router.post(
+    "/release-control/telegram",
+    summary="Ceder control de una conversación de Telegram al bot",
+)
+async def release_telegram_control(body: ERPTelegramControlRequest) -> dict[str, str]:
+    """Reactiva las respuestas automáticas del bot para el chat de Telegram indicado.
+
+    Body:
+        - chat_id: Telegram chat ID del cliente.
+    """
+    logger.info("[release-control/telegram] chat_id=%s", body.chat_id)
+    human_control.release_telegram_control(body.chat_id)
+    return {"status": "released", "chat_id": body.chat_id}
 
 
 @router.post(

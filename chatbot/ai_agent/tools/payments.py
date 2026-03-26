@@ -188,4 +188,7 @@ async def get_payment_instructions(
         )
 
     data = extract_erp_data(response.json())
-    return PaymentInstructions.model_validate(data)
+    result = PaymentInstructions.model_validate(data)
+    # Temporarily suppress payment_link — do not expose it to the user.
+    result.payment_link = None
+    return result

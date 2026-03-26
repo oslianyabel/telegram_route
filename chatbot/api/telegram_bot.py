@@ -57,6 +57,7 @@ from chatbot.api.utils.webhook_parser import (
     _TICKET_ID_RE,
     create_or_retrieve_images_dir,
 )
+from chatbot.core import human_control
 from chatbot.core.config import config
 from chatbot.core.logging_conf import init_logging
 from chatbot.db.services import services
@@ -361,6 +362,16 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         logger.info("=" * 80)
         logger.info("telegram_id=%s: %s", chat_id, incoming_msg)
+
+        # ------------------------------------------------------------------
+        # Human-control check: skip AI if operator has taken over this chat
+        # ------------------------------------------------------------------
+        if human_control.is_telegram_controlled(chat_id):
+            logger.info(
+                "[human-control] Skipping AI for telegram_id=%s — conversation under human control",
+                chat_id,
+            )
+            return
 
         # Start typing indicator loop in background
         typing_task = asyncio.create_task(_typing_loop(context.bot, chat_id_int))

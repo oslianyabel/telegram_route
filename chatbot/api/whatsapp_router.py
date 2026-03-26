@@ -26,6 +26,7 @@ from chatbot.api.utils import message_handler
 from chatbot.api.utils.message_queue import Message, message_queue
 from chatbot.api.utils.text import strip_markdown
 from chatbot.api.utils.webhook_parser import ParsedMessage, extract_message_content
+from chatbot.core import human_control
 from chatbot.core.config import config
 from chatbot.db.services import services
 from chatbot.erp.client import build_erp_client
@@ -123,6 +124,16 @@ async def _process_message(message: Message) -> None:
 
     await whatsapp_manager.mark_read(message_id)
     await whatsapp_manager.send_typing_indicator(message_id)
+
+    # ------------------------------------------------------------------
+    # Human-control check: skip AI if operator has taken over this chat
+    # ------------------------------------------------------------------
+    if human_control.is_whatsapp_controlled(user_number):
+        logger.info(
+            "[human-control] Skipping AI for %s — conversation under human control",
+            user_number,
+        )
+        return
 
     try:
         if incoming_msg.lower() == "/restart":

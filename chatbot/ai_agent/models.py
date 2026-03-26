@@ -1043,6 +1043,24 @@ class ERPSurveyRequest(BaseModel):
     ticket_id: str
 
 
+class ERPWhatsAppControlRequest(BaseModel):
+    """Body for /erp/take-control/whatsapp and /erp/release-control/whatsapp.
+
+    phone: WhatsApp phone number of the conversation to control (e.g. +59899000000).
+    """
+
+    phone: str
+
+
+class ERPTelegramControlRequest(BaseModel):
+    """Body for /erp/take-control/telegram and /erp/release-control/telegram.
+
+    chat_id: Telegram chat ID of the conversation to control.
+    """
+
+    chat_id: str
+
+
 # ---------------------------------------------------------------------------
 # 14. Itinerary
 # ---------------------------------------------------------------------------
