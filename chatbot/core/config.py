@@ -35,6 +35,7 @@ class MyConfig(BaseSettings):  # type: ignore
     # Telegram developer notifications
     TELEGRAM_BOT_TOKEN: str
     TELEGRAM_DEV_CHAT_ID: str
+    TELEGRAM_BOT_TOKEN_NOTIFIER: str
 
     # Server
     SERVER_HOST: str

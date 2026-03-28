@@ -34,3 +34,29 @@ async def stop_lead_followups(ctx: RunContext[AgentDeps]) -> str:
         conversation_id,
     )
     return "Mensajes automáticos de seguimiento desactivados"
+
+
+async def start_lead_followups(ctx: RunContext[AgentDeps]) -> str:
+    """Re-enable lead follow-up messages for this conversation.
+
+    Use this tool only when the user explicitly asks to receive follow-up
+    reminders or promotional nudges again after previously opting out.
+
+    Args:
+        ctx: Agent run context with dependencies.
+    """
+    conversation_id = ctx.deps.telegram_id or ctx.deps.user_phone
+    if not conversation_id:
+        raise ValueError("conversation identifier is required to enable follow-ups")
+    if ctx.deps.db_services is None:
+        raise ValueError("db_services is required to enable follow-ups")
+
+    await ctx.deps.db_services.deactivate_system_message(
+        phone=conversation_id,
+        message=FOLLOW_UP_OPTOUT_MARKER,
+    )
+    logger.info(
+        "[start_lead_followups] follow-ups re-enabled for conversation=%s",
+        conversation_id,
+    )
+    return "Mensajes automáticos de seguimiento reactivados"

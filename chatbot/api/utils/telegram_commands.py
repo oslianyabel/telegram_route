@@ -23,10 +23,12 @@ Commands registered:
   /get_itinerary
   /cancel_reservation             <ticket_id>
   /stop_followups
+  /start_followups
 """
 
 from __future__ import annotations
 
+import html
 import json
 import logging
 from typing import Any
@@ -34,6 +36,7 @@ from typing import Any
 import httpx
 from pydantic import BaseModel
 from pydantic_ai import RunContext
+from pydantic_ai.exceptions import ModelRetry
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -59,7 +62,10 @@ from chatbot.ai_agent.tools.catalog import (
     list_routes,
 )
 from chatbot.ai_agent.tools.customer import update_contact, upsert_lead
-from chatbot.ai_agent.tools.notifications import stop_lead_followups
+from chatbot.ai_agent.tools.notifications import (
+    start_lead_followups,
+    stop_lead_followups,
+)
 from chatbot.db.services import services
 from chatbot.messaging.telegram_notifier import notify_error
 from chatbot.messaging.whatsapp import WhatsAppManager
@@ -137,6 +143,13 @@ def _truncate(text: str) -> str:
     return text
 
 
+def _escape_md(text: str) -> str:
+    """Escape Telegram legacy Markdown special characters in plain-text fragments."""
+    for ch in ("*", "_", "`", "["):
+        text = text.replace(ch, f"\\{ch}")
+    return text
+
+
 def _parse_kwargs(args: list[str]) -> dict[str, str]:
     """Parse 'key=value' pairs from command args."""
     result: dict[str, str] = {}
@@ -167,6 +180,11 @@ async def _send_error(
     context_str: str,
 ) -> None:
     """Log, notify dev, and reply with a friendly error message."""
+    if isinstance(exc, ModelRetry):
+        # ModelRetry is a flow-control signal, not a real error — show the message to the user
+        if update.message:
+            await update.message.reply_text(f"ℹ️ {exc.message}")
+        return
     logger.exception("Error in command %s: %s", context_str, exc)
     await notify_error(exc, context=f"telegram_cmd | {context_str}")
     if update.message:
@@ -210,7 +228,7 @@ async def cmd_list_experiences(
 
     lines = [f"🧀 *Experiencias* ({len(experiences)} resultados)\n"]
     for exp in experiences:
-        lines.append(f"• `{exp.experience_id}` — {exp.name}")
+        lines.append(f"• `{exp.experience_id}` — {_escape_md(exp.name)}")
 
     lines.append(
         "\nUsa `/get_experience_detail <id>` para ver el detalle de una experiencia."
@@ -275,7 +293,7 @@ async def cmd_list_routes(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     lines = [f"🗺️ *Rutas* ({len(routes)} resultados)\n"]
     for route in routes:
-        lines.append(f"• `{route.route_id}` — {route.name}")
+        lines.append(f"• `{route.route_id}` — {_escape_md(route.name)}")
 
     lines.append("\nUsa `/get_route_detail <id>` para ver el detalle de una ruta.")
     await update.message.reply_text(_truncate("\n".join(lines)), parse_mode="Markdown")
@@ -339,7 +357,7 @@ async def cmd_list_establishments(
 
     lines = [f"🏠 *Establecimientos* ({len(establishments)} resultados)\n"]
     for est in establishments:
-        lines.append(f"• `{est.establishment_id}` — {est.name}")
+        lines.append(f"• `{est.establishment_id}` — {_escape_md(est.name)}")
 
     lines.append("\nUsa `/get_establishment_details <id>` para ver el detalle.")
     await update.message.reply_text(_truncate("\n".join(lines)), parse_mode="Markdown")
@@ -366,7 +384,7 @@ async def cmd_get_establishment_details(
         )
         return
 
-    establishment_id = args[0]
+    establishment_id = " ".join(args)
     ctx = _build_ctx(chat_id)
     try:
         detail = await get_establishment_details(ctx, establishment_id=establishment_id)
@@ -400,7 +418,10 @@ async def cmd_get_availability(
         )
         return
 
-    experience_id, date_from, date_to = args[0], args[1], args[2]
+    # Las fechas siempre son los dos últimos args; el resto forma el experience_id
+    date_to = args[-1]
+    date_from = args[-2]
+    experience_id = " ".join(args[:-2])
     ctx = _build_ctx(chat_id)
     try:
         availability = await get_availability(
@@ -439,7 +460,10 @@ async def cmd_get_route_availability(
         )
         return
 
-    route_id, date, party_str = args[0], args[1], args[2]
+    # El número de personas siempre es el último arg; la fecha el penúltimo
+    party_str = args[-1]
+    date = args[-2]
+    route_id = " ".join(args[:-2])
     try:
         party_size = int(party_str)
     except ValueError:
@@ -524,8 +548,7 @@ async def cmd_update_contact(
 
     if not any([name, email]):
         await update.message.reply_text(
-            "❌ No se detectaron campos válidos. "
-            "Usa `nombre=X` o `email=X`.",
+            "❌ No se detectaron campos válidos. Usa `nombre=X` o `email=X`.",
             parse_mode="Markdown",
         )
         return
@@ -650,17 +673,18 @@ async def cmd_get_reservations(
         await update.message.reply_text(msg + ".", parse_mode="Markdown")
         return
 
-    lines = [f"🎟️ *Reservas* ({result.total} en total)\n"]
+    lines = [f"🎟️ <b>Reservas</b> ({result.total} en total)\n"]
     for ticket in result.tickets:
+        exp = html.escape(ticket.experience_name or ticket.experience or "")
         lines.append(
-            f"• `{ticket.name}` — {ticket.experience_name or ticket.experience or ''} — *{ticket.status}*"
+            f"• <code>{html.escape(ticket.name)}</code> — {exp} — <b>{html.escape(ticket.status or '')}</b>"
         )
     if result.total and result.total > len(result.tickets):
         lines.append(
-            f"\n_Mostrando {len(result.tickets)} de {result.total}. "
-            "Usa `/get_reservations` con filtro de estado para ver más._"
+            f"\n<i>Mostrando {len(result.tickets)} de {result.total}. "
+            "Usa /get_reservations con filtro de estado para ver más.</i>"
         )
-    await update.message.reply_text(_truncate("\n".join(lines)), parse_mode="Markdown")
+    await update.message.reply_text(_truncate("\n".join(lines)), parse_mode="HTML")
 
 
 # ---------------------------------------------------------------------------
@@ -803,7 +827,9 @@ async def cmd_list_available_experiences(
     lines = [f"📅 *Disponibilidad* ({len(availabilities)} experiencias)\n"]
     for av in availabilities:
         slot_count = len(av.slots) if av.slots else 0
-        lines.append(f"• `{av.experience_id}` — {av.experience_name or ''} ({slot_count} slots)")
+        lines.append(
+            f"• `{av.experience_id}` — {av.experience_name or ''} ({slot_count} slots)"
+        )
 
     lines.append(
         "\nUsa `/get_availability <experience_id> <date_from> <date_to>` para ver los slots en detalle."
@@ -829,6 +855,28 @@ async def cmd_stop_followups(
         msg = await stop_lead_followups(ctx)
     except Exception as exc:
         await _send_error(update, exc, "cmd_stop_followups")
+        return
+
+    await update.message.reply_text(f"✅ {msg}")
+
+
+# /start_followups
+# ---------------------------------------------------------------------------
+
+
+async def cmd_start_followups(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """/start_followups — reactiva los mensajes automáticos de seguimiento."""
+    if not update.message or not update.effective_chat:
+        return
+    chat_id = str(update.effective_chat.id)
+
+    ctx = _build_ctx(chat_id)
+    try:
+        msg = await start_lead_followups(ctx)
+    except Exception as exc:
+        await _send_error(update, exc, "cmd_start_followups")
         return
 
     await update.message.reply_text(f"✅ {msg}")

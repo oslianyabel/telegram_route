@@ -162,6 +162,19 @@ class Services:
             return
         await self.create_message(phone=phone, role="system", message=message)
 
+    async def deactivate_system_message(self, phone: str, message: str) -> None:
+        query = (
+            message_table.update()
+            .where(message_table.c.user_phone == phone)
+            .where(message_table.c.role == "system")
+            .where(message_table.c.message == message)
+            .where(message_table.c.active.is_(True))
+            .values(active=False)
+        )
+        if self.debug:
+            logger.debug(query)
+        await self.database.execute(query)
+
     async def reset_chat(self, phone: str):
         logger.warning(f"Logically deactivating chats from {phone}")
         user = await self.get_user(phone)

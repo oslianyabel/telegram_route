@@ -1,7 +1,7 @@
 """Send Telegram notifications to the developer when critical errors occur.
 
 Uses the Telegram Bot API directly via httpx (no extra dependency needed).
-Configure TELEGRAM_BOT_TOKEN and TELEGRAM_DEV_CHAT_ID in the .env file.
+Configure TELEGRAM_BOT_TOKEN_NOTIFIER and TELEGRAM_DEV_CHAT_ID in the .env file.
 """
 
 from __future__ import annotations
@@ -35,12 +35,12 @@ async def notify_error(
         exc: The exception that triggered the notification.
         context: Optional free-text with extra context (e.g. user phone, action).
     """
-    token: str = config.TELEGRAM_BOT_TOKEN
+    token: str = config.TELEGRAM_BOT_TOKEN_NOTIFIER
     chat_id: str = config.TELEGRAM_DEV_CHAT_ID
 
     if not token or not chat_id:
         logger.warning(
-            "Telegram notifier not configured (TELEGRAM_BOT_TOKEN / TELEGRAM_DEV_CHAT_ID missing)"
+            "Telegram notifier not configured (TELEGRAM_BOT_TOKEN_NOTIFIER / TELEGRAM_DEV_CHAT_ID missing)"
         )
         return
 
@@ -152,7 +152,7 @@ async def notify_slow_response(
         response_time: Tiempo de respuesta en segundos.
         provider_error: Descripción del error del proveedor de IA, si hubo alguno.
     """
-    url = TELEGRAM_API_URL.format(token=config.TELEGRAM_BOT_TOKEN)
+    url = TELEGRAM_API_URL.format(token=config.TELEGRAM_BOT_TOKEN_NOTIFIER)
     message = _build_slow_response_message(
         phone=phone,
         user_message=user_message,
@@ -193,7 +193,7 @@ async def send_message(chat_id: str, text: str) -> bool:
         True si el mensaje se envió correctamente, False en caso de error.
     """
     logger.debug("[send_message] chat_id=%s", chat_id)
-    url = TELEGRAM_API_URL.format(token=config.TELEGRAM_BOT_TOKEN)
+    url = TELEGRAM_API_URL.format(token=config.TELEGRAM_BOT_TOKEN_NOTIFIER)
     try:
         async with httpx.AsyncClient(timeout=_SEND_TIMEOUT) as client:
             response = await client.post(

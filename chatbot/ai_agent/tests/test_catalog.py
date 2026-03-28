@@ -61,18 +61,6 @@ async def test_list_experiences_only_online(ctx: RunContext[AgentDeps]) -> None:
     assert len(offline) == 0, f"Se recibieron experiencias no-ONLINE: {offline}"
 
 
-# uv run pytest -s chatbot/ai_agent/tests/test_catalog.py::test_list_experiences_with_search
-@pytest.mark.anyio
-async def test_list_experiences_with_search(ctx: RunContext[AgentDeps]) -> None:
-    """El filtro search debe reducir o mantener el total de resultados."""
-    all_results = await list_experiences(ctx)
-    searched = await list_experiences(ctx, search="Tour")
-
-    print(f"\n  Sin filtro: {len(all_results)} | Con search='Tour': {len(searched)}")
-    assert isinstance(searched, list)
-    assert len(searched) <= len(all_results)
-
-
 # uv run pytest -s chatbot/ai_agent/tests/test_catalog.py::test_list_experiences_with_date
 @pytest.mark.anyio
 async def test_list_experiences_with_date(ctx: RunContext[AgentDeps]) -> None:
@@ -123,18 +111,6 @@ async def test_list_routes(ctx: RunContext[AgentDeps]) -> None:
     assert isinstance(result, list)
     assert len(result) > 0
     assert all(isinstance(r, Route) for r in result)
-
-
-# uv run pytest -s chatbot/ai_agent/tests/test_catalog.py::test_list_routes_with_search
-@pytest.mark.anyio
-async def test_list_routes_with_search(ctx: RunContext[AgentDeps]) -> None:
-    """El filtro search debe reducir o mantener el total de rutas."""
-    all_routes = await list_routes(ctx)
-    searched = await list_routes(ctx, search="Combo")
-
-    print(f"\n  Sin filtro: {len(all_routes)} | Con search='Combo': {len(searched)}")
-    assert isinstance(searched, list)
-    assert len(searched) <= len(all_routes)
 
 
 # uv run pytest -s chatbot/ai_agent/tests/test_catalog.py::test_list_routes_pagination

@@ -36,7 +36,7 @@ CHANNEL_MARKERS = {
     CHANNEL_WHATSAPP: "CHANNEL: whatsapp",
     CHANNEL_TELEGRAM: "CHANNEL: telegram",
 }
-INITIAL_FOLLOW_UP_DELAY = timedelta(hours=12)
+INITIAL_FOLLOW_UP_DELAY = timedelta(hours=2)
 REPEAT_FOLLOW_UP_DELAY = timedelta(hours=20)
 MAX_INACTIVE_WINDOW = timedelta(hours=24)
 WHATSAPP_FREE_WINDOW = timedelta(hours=24)

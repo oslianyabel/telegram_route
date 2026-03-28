@@ -59,6 +59,7 @@ from chatbot.api.utils.telegram_commands import (
     cmd_list_experiences,
     cmd_list_routes,
     cmd_resolve_or_create_contact,
+    cmd_start_followups,
     cmd_stop_followups,
     cmd_update_contact,
     cmd_upsert_lead,
@@ -778,6 +779,7 @@ def build_application() -> Application:
         CommandHandler("list_available_experiences", cmd_list_available_experiences)
     )
     app.add_handler(CommandHandler("stop_followups", cmd_stop_followups))
+    app.add_handler(CommandHandler("start_followups", cmd_start_followups))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, _handle_image))
