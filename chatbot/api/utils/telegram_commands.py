@@ -46,7 +46,7 @@ from chatbot.ai_agent.tools.catalog import (
 from chatbot.ai_agent.tools.customer import update_contact, upsert_lead
 from chatbot.db.services import services
 from chatbot.messaging.telegram_notifier import notify_error
-from chatbot.messaging.whatsapp import WhatsAppClient
+from chatbot.messaging.whatsapp import WhatsAppManager
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 # Module-level ERP client — set by telegram_bot._post_init via init()
 # ---------------------------------------------------------------------------
 _erp_client: httpx.AsyncClient | None = None
-_noop_whatsapp = WhatsAppClient()
+_noop_whatsapp = WhatsAppManager()
 
 _MAX_MSG_LEN = 4000  # Telegram limit is 4096; leave margin for Markdown escaping
 

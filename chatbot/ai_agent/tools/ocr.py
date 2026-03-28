@@ -1,15 +1,19 @@
 """OCR agent with vision for payment receipt extraction.
 
-Uses a Gemini vision model to parse JPG/PNG receipt images and return
-structured :class:`~chatbot.ai_agent.models.PaymentReceipt` data.
+Uses a Gemini vision model to parse JPG/PNG receipt images and PDF documents,
+returning structured :class:`~chatbot.ai_agent.models.PaymentReceipt` data.
 
 Usage example::
 
     import asyncio
     from chatbot.ai_agent.tools.ocr import extract_payment_receipt
+    from chatbot.ai_agent.tools.ocr import extract_payment_receipt_from_pdf
 
     receipt = asyncio.run(extract_payment_receipt("path/to/receipt.jpg"))
     print(receipt.amount)
+
+    receipt_pdf = asyncio.run(extract_payment_receipt_from_pdf("path/to/receipt.pdf"))
+    print(receipt_pdf.amount)
 """
 
 from __future__ import annotations
@@ -121,6 +125,53 @@ async def extract_payment_receipt(image_path: str) -> PaymentReceipt:
     receipt: PaymentReceipt = result.output
     logger.info(
         "[extract_payment_receipt] extraction complete — amount=%s reference=%s",
+        receipt.amount,
+        receipt.reference,
+    )
+    return receipt
+
+
+async def extract_payment_receipt_from_pdf(pdf_path: str) -> PaymentReceipt:
+    """Extract structured payment data from a PDF receipt using vision AI.
+
+    Args:
+        pdf_path: Absolute or relative path to the PDF receipt file.
+
+    Returns:
+        PaymentReceipt with the extracted fields. Fields not found in the
+        document will be None.
+
+    Raises:
+        ValueError: If the file extension is not .pdf.
+        FileNotFoundError: If the PDF file cannot be found.
+    """
+    path = Path(pdf_path)
+
+    if not path.exists():
+        raise FileNotFoundError(f"PDF file not found: {pdf_path}")
+
+    if path.suffix.lower() != ".pdf":
+        raise ValueError(
+            f"Unsupported file extension '{path.suffix}'. Expected .pdf"
+        )
+
+    logger.debug(
+        "[extract_payment_receipt_from_pdf] processing PDF: %s", path
+    )
+
+    pdf_bytes = path.read_bytes()
+    agent = _get_ocr_agent()
+
+    result = await agent.run(
+        [
+            _OCR_PROMPT,
+            BinaryContent(data=pdf_bytes, media_type="application/pdf"),
+        ]
+    )
+
+    receipt: PaymentReceipt = result.output
+    logger.info(
+        "[extract_payment_receipt_from_pdf] extraction complete — amount=%s reference=%s",
         receipt.amount,
         receipt.reference,
     )

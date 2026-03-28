@@ -1,5 +1,6 @@
 import logging
-from contextlib import asynccontextmanager
+from asyncio import CancelledError, Task, create_task
+from contextlib import asynccontextmanager, suppress
 
 from asgi_correlation_id import CorrelationIdMiddleware
 from fastapi import FastAPI
@@ -14,6 +15,8 @@ from chatbot.core.config import config
 from chatbot.core.logging_conf import init_logging
 from chatbot.core.sentry import init_sentry
 from chatbot.db.services import services
+from chatbot.deposit_reminder import deposit_reminder_worker
+from chatbot.lead_followup import lead_followup_worker
 
 init_logging()
 logger = logging.getLogger(__name__)
@@ -29,8 +32,21 @@ async def lifespan(app: FastAPI):
     await services.database.connect()
     init_sentry()
     create_dirs()
+    followup_task: Task[None] = create_task(
+        lead_followup_worker(db_services=services, erp_client=erp_client)
+    )
+    deposit_reminder_task: Task[None] = create_task(
+        deposit_reminder_worker(db_services=services, erp_client=erp_client)
+    )
 
     yield
+
+    followup_task.cancel()
+    deposit_reminder_task.cancel()
+    with suppress(CancelledError):
+        await followup_task
+    with suppress(CancelledError):
+        await deposit_reminder_task
 
     try:
         await services.database.disconnect()

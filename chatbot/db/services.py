@@ -16,7 +16,12 @@ from pydantic_ai.messages import (
 )
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from chatbot.db.schema import init_db, message_table, users_table
+from chatbot.db.schema import (
+    deposit_reminders_table,
+    init_db,
+    message_table,
+    users_table,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +121,12 @@ class Services:
         if not await self.get_user(phone):
             await self.create_user(phone)
 
-        data = {"user_phone": phone, "role": role, "message": message}
+        data = {
+            "user_phone": phone,
+            "role": role,
+            "message": message,
+            "active": True,
+        }
         if tools_used is not None:
             data["tools_used"] = json.dumps(tools_used)
 
@@ -126,13 +136,44 @@ class Services:
 
         await self.database.execute(query)
 
+    async def has_message(
+        self,
+        phone: str,
+        role: str | None = None,
+        message: str | None = None,
+        active_only: bool = True,
+    ) -> bool:
+        query = message_table.select().where(message_table.c.user_phone == phone)
+        if active_only:
+            query = query.where(message_table.c.active.is_(True))
+        if role is not None:
+            query = query.where(message_table.c.role == role)
+        if message is not None:
+            query = query.where(message_table.c.message == message)
+        query = query.limit(1)
+        if self.debug:
+            logger.debug(query)
+        row = await self.database.fetch_one(query)
+        return row is not None
+
+    async def ensure_system_message(self, phone: str, message: str) -> None:
+        exists = await self.has_message(phone=phone, role="system", message=message)
+        if exists:
+            return
+        await self.create_message(phone=phone, role="system", message=message)
+
     async def reset_chat(self, phone: str):
-        logger.warning(f"Deleting chats from {phone}")
+        logger.warning(f"Logically deactivating chats from {phone}")
         user = await self.get_user(phone)
         if not user:
             return f"reset_chat: {phone} no existe"
 
-        query = message_table.delete().where(message_table.c.user_phone == phone)
+        query = (
+            message_table.update()
+            .where(message_table.c.user_phone == phone)
+            .where(message_table.c.active.is_(True))
+            .values(active=False)
+        )
         if self.debug:
             logger.debug(query)
 
@@ -146,6 +187,7 @@ class Services:
         query = (
             message_table.select()
             .where(message_table.c.user_phone == phone)
+            .where(message_table.c.active.is_(True))
             .where(message_table.c.created_at >= since)
             .order_by(message_table.c.created_at.asc())
         )
@@ -162,6 +204,7 @@ class Services:
             message_table.select()
             .where(message_table.c.user_phone == phone)
             .where(message_table.c.role == "user")
+            .where(message_table.c.active.is_(True))
             .order_by(message_table.c.created_at.desc())
             .limit(1)
         )
@@ -202,6 +245,18 @@ class Services:
         query = (
             message_table.select()
             .where(message_table.c.user_phone == phone)
+            .where(message_table.c.active.is_(True))
+            .order_by(message_table.c.created_at.asc())
+        )
+        if self.debug:
+            logger.debug(query)
+
+        return await self.database.fetch_all(query)
+
+    async def get_all_messages(self, phone: str):
+        query = (
+            message_table.select()
+            .where(message_table.c.user_phone == phone)
             .order_by(message_table.c.created_at.asc())
         )
         if self.debug:
@@ -222,6 +277,56 @@ class Services:
     async def get_chat_str(self, phone: str) -> str:
         messages = await self.get_chat(phone)
         return json.dumps(messages)
+
+    async def register_confirmed_ticket(self, ticket_id: str, phone: str) -> None:
+        """Registra un ticket confirmado para el seguimiento del recordatorio de seña.
+
+        Si el ticket ya existe (re-confirmación), no hace nada.
+        """
+        existing = await self.database.fetch_one(
+            deposit_reminders_table.select().where(
+                deposit_reminders_table.c.ticket_id == ticket_id
+            )
+        )
+        if existing:
+            logger.debug(
+                "[deposit_reminders] ticket_id=%s ya registrado, ignorando", ticket_id
+            )
+            return
+        query = deposit_reminders_table.insert().values(
+            ticket_id=ticket_id,
+            phone=phone,
+            confirmed_at=datetime.now(UTC).replace(tzinfo=None),
+            reminded_at=None,
+        )
+        await self.database.execute(query)
+        logger.info(
+            "[deposit_reminders] Ticket registrado para recordatorio: ticket_id=%s phone=%s",
+            ticket_id,
+            phone,
+        )
+
+    async def get_unreminded_tickets(self, cutoff: datetime) -> list:
+        """Devuelve los tickets confirmados antes de *cutoff* cuyo recordatorio aún no fue enviado."""
+        query = (
+            deposit_reminders_table.select()
+            .where(deposit_reminders_table.c.confirmed_at <= cutoff)
+            .where(deposit_reminders_table.c.reminded_at.is_(None))
+        )
+        return await self.database.fetch_all(query)
+
+    async def mark_deposit_reminder_sent(self, ticket_id: str) -> None:
+        """Marca el recordatorio de un ticket como enviado."""
+        query = (
+            deposit_reminders_table.update()
+            .where(deposit_reminders_table.c.ticket_id == ticket_id)
+            .values(reminded_at=datetime.now(UTC).replace(tzinfo=None))
+        )
+        await self.database.execute(query)
+        logger.info(
+            "[deposit_reminders] Recordatorio marcado como enviado: ticket_id=%s",
+            ticket_id,
+        )
 
 
 database = init_db()

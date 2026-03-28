@@ -40,6 +40,7 @@ from chatbot.ai_agent.tools.customer import (
     upsert_lead,
 )
 from chatbot.ai_agent.tools.date_resolver import resolve_relative_date
+from chatbot.ai_agent.tools.notifications import stop_lead_followups
 from chatbot.ai_agent.tools.payments import get_payment_instructions
 from chatbot.ai_agent.tools.support import create_complaint
 
@@ -84,6 +85,7 @@ AGENT_TOOLS = [
     # Customer / CRM (contact resolution runs as system_prompt instruction)
     update_contact,
     upsert_lead,
+    stop_lead_followups,
     # Reservations
     create_pending_reservation,
     get_reservation_status,

@@ -14,6 +14,8 @@ from pydantic_ai import ModelRetry, RunContext
 from chatbot.ai_agent.dependencies import AgentDeps
 from chatbot.ai_agent.models import (
     ERP_BASE_PATH,
+    ContactInfo,
+    CustomerItinerary,
     DepositPaymentResult,
     PaymentInstructions,
 )
@@ -157,6 +159,66 @@ async def register_deposit_payment(
 
     data = extract_erp_data(response.json())
     return DepositPaymentResult.model_validate(data)
+
+
+async def validate_ticket_ownership(
+    erp_client: httpx.AsyncClient,
+    user_phone: str,
+    ticket_id: str,
+) -> None:
+    """Validate that a ticket belongs to the user and is in CONFIRMED status.
+
+    Resolves the contact from the ERP using user_phone, retrieves the customer's
+    itinerary and checks that the ticket is present and confirmed.
+
+    Args:
+        erp_client: Authenticated ERP HTTP client.
+        user_phone: User's phone number (used to resolve contact).
+        ticket_id: ERP ticket identifier to validate (e.g. TKT-2026-03-00018).
+
+    Raises:
+        ValueError: If the ticket does not belong to the user or is not CONFIRMED.
+    """
+    logger.info(
+        "[validate_ticket_ownership] user_phone=%s ticket_id=%s",
+        user_phone,
+        ticket_id,
+    )
+
+    contact_resp = await erp_client.post(
+        f"{ERP_BASE_PATH}.contact_controller.resolve_or_create_contact",
+        json={"phone": user_phone},
+        timeout=ERP_TIMEOUT_SECONDS,
+    )
+    contact_resp.raise_for_status()
+    contact = ContactInfo.model_validate(extract_erp_data(contact_resp.json()))
+
+    itinerary_resp = await erp_client.post(
+        f"{ERP_BASE_PATH}.itinerary_controller.get_customer_itinerary",
+        json={"contact_id": contact.contact_id},
+        timeout=ERP_TIMEOUT_SECONDS,
+    )
+    itinerary_resp.raise_for_status()
+    itinerary = CustomerItinerary.model_validate(extract_erp_data(itinerary_resp.json()))
+
+    for item in itinerary.itinerary:
+        for reservation in item.reservations:
+            if reservation.reservation_id.upper() == ticket_id.upper():
+                if reservation.status.lower() != "confirmed":
+                    raise ValueError(
+                        f"El ticket {ticket_id} no está en estado CONFIRMADO "
+                        f"(estado actual: {reservation.status})."
+                    )
+                logger.info(
+                    "[validate_ticket_ownership] ticket %s validated for user %s",
+                    ticket_id,
+                    user_phone,
+                )
+                return
+
+    raise ValueError(
+        f"El ticket {ticket_id} no pertenece al número {user_phone}."
+    )
 
 
 async def get_payment_instructions(

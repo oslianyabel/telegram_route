@@ -45,9 +45,9 @@ async def test_extract_payment_receipt() -> None:
     assert isinstance(receipt, PaymentReceipt)
 
     print(f"  amount             = {receipt.amount}")
-    print(f"  transaction_datetime = {receipt.transaction_datetime}")
+    print(f"  transaction_datetime = {receipt.date}")
     print(f"  reference          = {receipt.reference}")
-    print(f"  destination_account= {receipt.destination_account}")
+    print(f"  destination_account= {receipt.account}")
     print(f"  recipient_name     = {receipt.recipient_name}")
     print(f"  payment_method     = {receipt.payment_method}")
     print(f"  branch             = {receipt.branch}")
@@ -56,9 +56,9 @@ async def test_extract_payment_receipt() -> None:
     # Al menos algún campo debe haber sido extraído
     extracted = [
         receipt.amount,
-        receipt.transaction_datetime,
+        receipt.date,
         receipt.reference,
-        receipt.destination_account,
+        receipt.account,
         receipt.recipient_name,
         receipt.payment_method,
         receipt.branch,

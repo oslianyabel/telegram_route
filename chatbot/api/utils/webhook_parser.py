@@ -6,7 +6,7 @@ from pathlib import Path
 import httpx
 
 from chatbot.ai_agent.models import PaymentReceipt
-from chatbot.ai_agent.tools.ocr import extract_payment_receipt
+from chatbot.ai_agent.tools.ocr import extract_payment_receipt, extract_payment_receipt_from_pdf
 from chatbot.audio.audio_converter import convert_ogg_to_mp3
 from chatbot.audio.stt import AVAILABLE_AUDIO_FORMATS, transcribe_audio
 from chatbot.core.config import config
@@ -63,7 +63,6 @@ async def extract_message_content(webhook_data: dict) -> ParsedMessage | None:
         message_type = message.get("type", "")
         media_types = {
             "video",
-            "document",
             "sticker",
             "location",
             "contacts",
@@ -108,6 +107,56 @@ async def extract_message_content(webhook_data: dict) -> ParsedMessage | None:
                     )
                 except Exception as exc:
                     logger.exception(f"Failed to download/process image: {exc}")
+                    return None
+
+            return ParsedMessage(
+                user_number=user_number,
+                message_id=message_id,
+                receipt=receipt,
+                ticket_id=ticket_id,
+            )
+
+        elif message_type == "document":
+            doc_obj = message.get("document", {})
+            mime_type: str = doc_obj.get("mime_type", "")
+            if mime_type != "application/pdf":
+                logger.warning(
+                    f"Skipping document with unsupported mime_type: {mime_type}"
+                )
+                return None
+
+            media_id = doc_obj.get("id")
+            caption = doc_obj.get("caption")
+            if not media_id:
+                logger.error("Document message without media id")
+                return None
+
+            media_meta_url = f"{API_BASE}/{media_id}"
+            headers = {"Authorization": f"Bearer {config.WHATSAPP_ACCESS_TOKEN}"}
+            timeout = httpx.Timeout(MEDIA_REQUEST_TIMEOUT_SECONDS)
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                meta_resp = await client.get(
+                    media_meta_url,
+                    headers=headers,
+                    timeout=META_REQUEST_TIMEOUT_SECONDS,
+                )
+                meta_resp.raise_for_status()
+                meta_json = meta_resp.json()
+                media_url = meta_json.get("url")
+                if not media_url:
+                    logger.error(f"No media url for document media id {media_id}")
+                    return None
+
+                try:
+                    receipt, ticket_id = await _extract_pdf_from_message(
+                        user_number=user_number,
+                        media_url=media_url,
+                        headers=headers,
+                        client=client,
+                        caption=caption,
+                    )
+                except Exception as exc:
+                    logger.exception(f"Failed to download/process PDF document: {exc}")
                     return None
 
             return ParsedMessage(
@@ -240,6 +289,13 @@ def create_or_retrieve_images_dir() -> Path:
     return images_dir
 
 
+def create_or_retrieve_documents_dir() -> Path:
+    repo_root = Path(__file__).resolve().parents[3]
+    documents_dir = repo_root / "static" / "documents"
+    documents_dir.mkdir(parents=True, exist_ok=True)
+    return documents_dir
+
+
 async def _extract_image_from_message(
     user_number: str,
     media_url: str,
@@ -311,6 +367,73 @@ async def _extract_image_from_message(
             logger.info("[image] Extracted ticket_id=%s from caption", ticket_id)
         else:
             logger.debug("[image] Caption present but no ticket_id found: %r", caption)
+
+    return receipt, ticket_id
+
+
+async def _extract_pdf_from_message(
+    user_number: str,
+    media_url: str,
+    headers: dict[str, str],
+    client: httpx.AsyncClient,
+    caption: str | None = None,
+) -> tuple[PaymentReceipt, str | None]:
+    """Descarga un PDF de WhatsApp, lo guarda en static/documents y ejecuta OCR.
+
+    Args:
+        user_number: Número de teléfono del remitente (usado como nombre de archivo).
+        media_url: URL firmada del archivo en la API de Meta.
+        headers: Headers de autorización.
+        client: Cliente HTTP async reutilizado.
+        caption: Caption opcional del mensaje (puede contener ticket_id).
+
+    Returns:
+        Tuple (PaymentReceipt, ticket_id) donde ticket_id se extrae del caption si
+        coincide con el patrón TKT-YYYY-MM-NNNNN, o None si no está disponible.
+    """
+    async with client.stream(
+        "GET",
+        media_url,
+        headers=headers,
+        timeout=MEDIA_REQUEST_TIMEOUT_SECONDS,
+    ) as response:
+        response.raise_for_status()
+
+        documents_dir = create_or_retrieve_documents_dir()
+        file_path = documents_dir / f"{user_number}.pdf"
+        with open(file_path, "wb") as fh:
+            async for chunk in response.aiter_bytes(chunk_size=8192):
+                if chunk:
+                    fh.write(chunk)
+
+    logger.info("[pdf] Saved PDF to %s", file_path)
+
+    receipt = await extract_payment_receipt_from_pdf(str(file_path))
+
+    # Log all extracted OCR fields
+    logger.info(
+        "[ocr] Extracted receipt data — "
+        "amount=%s | date=%s | reference=%s | account=%s | "
+        "recipient_name=%s | payment_method=%s | branch=%s | concept=%s",
+        receipt.amount,
+        receipt.date,
+        receipt.reference,
+        receipt.account,
+        receipt.recipient_name,
+        receipt.payment_method,
+        receipt.branch,
+        receipt.concept,
+    )
+
+    # Extract ticket_id from caption if it matches the ERP ticket pattern
+    ticket_id: str | None = None
+    if caption:
+        match = _TICKET_ID_RE.search(caption)
+        if match:
+            ticket_id = match.group().upper()
+            logger.info("[pdf] Extracted ticket_id=%s from caption", ticket_id)
+        else:
+            logger.debug("[pdf] Caption present but no ticket_id found: %r", caption)
 
     return receipt, ticket_id
 

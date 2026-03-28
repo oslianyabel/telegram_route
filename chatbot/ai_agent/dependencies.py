@@ -12,7 +12,7 @@ import httpx
 
 from chatbot.ai_agent.context import WebhookContextManager
 from chatbot.db.services import Services
-from chatbot.messaging.whatsapp import WhatsAppClient
+from chatbot.messaging.whatsapp import WhatsAppManager
 
 
 @dataclass
@@ -21,7 +21,7 @@ class AgentDeps:
 
     erp_client: httpx.AsyncClient
     db_services: Services
-    whatsapp_client: WhatsAppClient
+    whatsapp_client: WhatsAppManager
     webhook_context: WebhookContextManager
     user_phone: str = ""
     user_name: str | None = None

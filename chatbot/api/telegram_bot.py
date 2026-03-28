@@ -32,11 +32,12 @@ from chatbot.ai_agent.context import webhook_context_manager
 from chatbot.ai_agent.dependencies import AgentDeps
 from chatbot.ai_agent.error_agent import run_error_agent
 from chatbot.ai_agent.summary_agent import summarize_conversation
-from chatbot.ai_agent.tools.ocr import extract_payment_receipt
+from chatbot.ai_agent.tools.ocr import extract_payment_receipt, extract_payment_receipt_from_pdf
 from chatbot.ai_agent.tools.payments import (
     erp_validation_user_message,
     parse_amount,
     register_deposit_payment,
+    validate_ticket_ownership,
 )
 from chatbot.api.utils import message_handler, telegram_commands
 from chatbot.api.utils.telegram_commands import (
@@ -63,7 +64,7 @@ from chatbot.core.logging_conf import init_logging
 from chatbot.db.services import services
 from chatbot.erp.client import build_erp_client
 from chatbot.messaging.telegram_notifier import notify_error
-from chatbot.messaging.whatsapp import WhatsAppClient
+from chatbot.messaging.whatsapp import WhatsAppManager
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +84,7 @@ _user_phones: dict[str, str] = {}
 _pending_phone: set[str] = set()
 
 # Stub WhatsApp client (not used in Telegram, but AgentDeps requires it)
-_noop_whatsapp = WhatsAppClient()
+_noop_whatsapp = WhatsAppManager()
 
 
 # ---------------------------------------------------------------------------
@@ -268,6 +269,23 @@ async def _handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             return
 
         assert erp_client is not None, "ERP client not initialized"
+        user_phone: str = _user_phones.get(chat_id, "")
+        try:
+            await validate_ticket_ownership(
+                erp_client=erp_client,
+                user_phone=user_phone,
+                ticket_id=ticket_id,
+            )
+        except ValueError as exc:
+            logger.warning(
+                "[receipt] Ticket validation failed for telegram_id=%s ticket=%s: %s",
+                chat_id,
+                ticket_id,
+                exc,
+            )
+            await update.message.reply_text(f"⚠️ {exc}")
+            return
+
         ocr_payload = receipt.model_dump(exclude_none=True)
         try:
             result = await register_deposit_payment(
@@ -319,6 +337,156 @@ async def _handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await notify_error(
             exc,
             context=f"telegram_bot._handle_image | chat_id={chat_id}",
+        )
+        await update.message.reply_text(
+            "Ocurrió un error al registrar el pago. Por favor inténtalo de nuevo."
+        )
+
+
+async def _handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Descarga el PDF recibido, ejecuta OCR, registra el pago en el ERP y notifica al usuario."""
+    if not update.message or not update.message.document or not update.effective_chat:
+        return
+
+    chat_id: str = str(update.effective_chat.id)
+
+    try:
+        document = update.message.document
+        tg_file = await document.get_file()
+
+        documents_dir = create_or_retrieve_images_dir().parent / "documents"
+        documents_dir.mkdir(parents=True, exist_ok=True)
+        file_path = documents_dir / f"{chat_id}.pdf"
+        await tg_file.download_to_drive(str(file_path))
+        logger.info("[pdf] Saved Telegram PDF to %s", file_path)
+
+        # Extract ticket_id from caption if present
+        caption: str | None = update.message.caption
+        ticket_id: str | None = None
+        if caption:
+            match = _TICKET_ID_RE.search(caption)
+            if match:
+                ticket_id = match.group().upper()
+                logger.info("[pdf] Extracted ticket_id=%s from caption", ticket_id)
+            else:
+                logger.debug("[pdf] Caption present but no ticket_id: %r", caption)
+
+        typing_task = asyncio.create_task(
+            _typing_loop(context.bot, update.effective_chat.id)
+        )
+        try:
+            receipt = await extract_payment_receipt_from_pdf(str(file_path))
+        finally:
+            typing_task.cancel()
+
+        # Log all extracted OCR fields
+        logger.info(
+            "[ocr] Extracted receipt data — "
+            "amount=%s | date=%s | reference=%s | account=%s | "
+            "recipient_name=%s | payment_method=%s | branch=%s | concept=%s",
+            receipt.amount,
+            receipt.date,
+            receipt.reference,
+            receipt.account,
+            receipt.recipient_name,
+            receipt.payment_method,
+            receipt.branch,
+            receipt.concept,
+        )
+
+        # Validate amount
+        amount = parse_amount(receipt.amount)
+        if amount is None:
+            logger.error(
+                "[receipt] Could not parse amount from PDF for telegram_id=%s amount_raw=%s",
+                chat_id,
+                receipt.amount,
+            )
+            await update.message.reply_text(
+                "No se pudo determinar el monto del comprobante. "
+                "Por favor verifica el PDF e inténtalo de nuevo."
+            )
+            return
+
+        if not ticket_id:
+            logger.warning(
+                "[receipt] No ticket_id in caption for telegram_id=%s", chat_id
+            )
+            await update.message.reply_text(
+                "Para registrar tu pago necesito el número de ticket (ej: TKT-2026-03-00018). "
+                "Por favor envía el PDF con el número de ticket como descripción."
+            )
+            return
+
+        assert erp_client is not None, "ERP client not initialized"
+        user_phone_pdf: str = _user_phones.get(chat_id, "")
+        try:
+            await validate_ticket_ownership(
+                erp_client=erp_client,
+                user_phone=user_phone_pdf,
+                ticket_id=ticket_id,
+            )
+        except ValueError as exc:
+            logger.warning(
+                "[receipt] Ticket validation failed for telegram_id=%s ticket=%s: %s",
+                chat_id,
+                ticket_id,
+                exc,
+            )
+            await update.message.reply_text(f"⚠️ {exc}")
+            return
+
+        ocr_payload = receipt.model_dump(exclude_none=True)
+        try:
+            result = await register_deposit_payment(
+                erp_client=erp_client,
+                ticket_id=ticket_id,
+                amount=amount,
+                ocr_payload=ocr_payload,
+            )
+        except ValueError as exc:
+            user_msg = erp_validation_user_message(exc)
+            if user_msg:
+                logger.warning(
+                    "[receipt] ERP validation error for telegram_id=%s ticket=%s: %s",
+                    chat_id,
+                    ticket_id,
+                    exc,
+                )
+                await update.message.reply_text(f"⚠️ {user_msg}")
+                return
+            raise
+
+        logger.info(
+            "[receipt] Payment registered — deposit_id=%s ticket_id=%s amount_paid=%.2f "
+            "amount_remaining=%.2f is_complete=%s",
+            result.deposit_id,
+            result.ticket_id,
+            result.amount_paid,
+            result.amount_remaining,
+            result.is_complete,
+        )
+        if result.is_complete:
+            reply = (
+                f"✅ Pago registrado exitosamente.\n"
+                f"Depósito: {result.deposit_id}\n"
+                f"Monto pagado: {result.amount_paid}\n"
+                f"Estado: Pago completado."
+            )
+        else:
+            reply = (
+                f"✅ Pago registrado exitosamente.\n"
+                f"Depósito: {result.deposit_id}\n"
+                f"Monto pagado: {result.amount_paid}\n"
+                f"Monto restante: {result.amount_remaining}"
+            )
+        await update.message.reply_text(reply)
+
+    except Exception as exc:
+        logger.exception("Error processing PDF for telegram_id=%s: %s", chat_id, exc)
+        await notify_error(
+            exc,
+            context=f"telegram_bot._handle_document | chat_id={chat_id}",
         )
         await update.message.reply_text(
             "Ocurrió un error al registrar el pago. Por favor inténtalo de nuevo."
@@ -377,6 +545,10 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         typing_task = asyncio.create_task(_typing_loop(context.bot, chat_id_int))
 
         try:
+            await services.ensure_system_message(
+                phone=chat_id,
+                message="CHANNEL: telegram",
+            )
             await message_handler.save_user_msg(chat_id, incoming_msg)
 
             assert erp_client is not None, "ERP client not initialized"
@@ -572,5 +744,6 @@ def build_application() -> Application:
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, _handle_image))
+    app.add_handler(MessageHandler(filters.Document.PDF, _handle_document))
 
     return app

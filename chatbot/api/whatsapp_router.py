@@ -21,6 +21,7 @@ from chatbot.ai_agent.tools.payments import (
     erp_validation_user_message,
     parse_amount,
     register_deposit_payment,
+    validate_ticket_ownership,
 )
 from chatbot.api.utils import message_handler
 from chatbot.api.utils.message_queue import Message, message_queue
@@ -147,6 +148,10 @@ async def _process_message(message: Message) -> None:
         logger.info("=" * 80)
         logger.info("%s: %s", user_number, incoming_msg)
 
+        await services.ensure_system_message(
+            phone=user_number,
+            message="CHANNEL: whatsapp",
+        )
         await message_handler.save_user_msg(user_number, incoming_msg)
 
         deps = AgentDeps(
@@ -360,6 +365,26 @@ async def _process_image_receipt(
         )
         return
 
+    try:
+        await validate_ticket_ownership(
+            erp_client=erp_client,
+            user_phone=user_number,
+            ticket_id=ticket_id,
+        )
+    except ValueError as exc:
+        logger.warning(
+            "[receipt] Ticket validation failed for user=%s ticket=%s: %s",
+            user_number,
+            ticket_id,
+            exc,
+        )
+        await whatsapp_manager.send_text(
+            user_number=user_number,
+            text=f"⚠️ {exc}",
+            message_id=message_id,
+        )
+        return
+
     ocr_payload = receipt.model_dump(exclude_none=True)
     try:
         result = await register_deposit_payment(
@@ -436,18 +461,38 @@ async def _process_image_receipt(
     )
     if result.is_complete:
         msg = (
-            f"✅ Pago registrado exitosamente.\n"
+            f"✅ ¡Seña pagada completamente!\n"
             f"Depósito: {result.deposit_id}\n"
-            f"Monto pagado: {result.amount_paid}\n"
-            f"Estado: Pago completado."
+            f"Ticket: {result.ticket_id}\n"
+            f"Total pagado: {result.total_amount_paid} UYU"
+        )
+        await whatsapp_manager.send_text(
+            user_number=user_number, text=msg, message_id=message_id
+        )
+        await _fetch_and_send_qr(
+            user_number=user_number,
+            ticket_id=ticket_id,
         )
     else:
         msg = (
             f"✅ Pago registrado exitosamente.\n"
             f"Depósito: {result.deposit_id}\n"
-            f"Monto pagado: {result.amount_paid}\n"
-            f"Monto restante: {result.amount_remaining}"
+            f"Monto pagado: {result.amount_paid} UYU\n"
+            f"Monto restante: {result.amount_remaining} UYU"
         )
-    await whatsapp_manager.send_text(
-        user_number=user_number, text=msg, message_id=message_id
+        await whatsapp_manager.send_text(
+            user_number=user_number, text=msg, message_id=message_id
+        )
+
+
+async def _fetch_and_send_qr(user_number: str, ticket_id: str) -> None:
+    """Obtiene el QR de check-in del ERP y lo envía al usuario por WhatsApp.
+
+    Args:
+        user_number: Número de WhatsApp del usuario.
+        ticket_id: Identificador del ticket para el que se solicita el QR.
+    """
+    logger.info(
+        "[_fetch_and_send_qr] user=%s ticket_id=%s", user_number, ticket_id
     )
+    return

@@ -64,17 +64,18 @@ Reservar Ruta: Ejecutar create_route_reservation SOLO tras resumen y confirmaci�
 
 FLUJOS CRÍTICOS
 
-Nueva Reserva: Inspirar -> Consultar disponibilidad -> Ofrecer turnos -> Pedir nombre -> Resumir y confirmar -> create_pending_reservation.
+Nueva Reserva: Inspirar -> Consultar disponibilidad -> Ofrecer turnos -> Pedir nombre -> Resumir y confirmar -> create_pending_reservation -> Informar al usuario que su reserva está pendiente de confirmación del establecimiento y que recibirá las instrucciones de pago una vez que sea aprobada.
 
-Nueva Reserva de Ruta: Inspirar -> get_route_availability -> Resumir y confirmar -> create_route_reservation -> get_route_booking_status -> informar route_booking_id y ticket_id de cada experiencia al usuario.
+Nueva Reserva de Ruta: Inspirar -> get_route_availability -> Resumir y confirmar -> create_route_reservation -> get_route_booking_status -> informar route_booking_id y ticket_id de cada experiencia al usuario -> Informar que las reservas están pendientes de confirmación del establecimiento y que recibirán las instrucciones de pago una vez aprobadas.
 
 Consulta de reservas existentes: get_reservations_by_phone para listar -> get_reservation_status para detalle.
 
-Tickets Pendientes y Pagos:
-- Pago de Seña: Las reservas en estado PENDING requieren el pago de la seña (adelanto) para ser aprobadas.
-- Validación: El usuario debe enviar una o más fotos de sus comprobantes de pago, indicando el número de ticket (ej: TKT-...) como comentario de la imagen.
-- Instrucciones: Si el usuario pregunta cómo pagar o cuánto debe, usá get_payment_instructions para darle los detalles exactos. IMPORTANTE: nunca compartas ni menciones el payment_link con el usuario; omití ese campo por completo.
-- Confirmación: Una vez enviado el comprobante, el usuario debe esperar a que el establecimiento confirme la seña para que el ticket pase a confirmado.
+Tickets Confirmados y Pago de Seña:
+- Las reservas en estado PENDING están esperando confirmación del establecimiento. NUNCA le pidas al usuario que pague mientras el ticket está en estado PENDING.
+- Cuando el establecimiento confirma la reserva, el sistema envía automáticamente al usuario las instrucciones de pago de la seña. No necesitás hacer nada al respecto.
+- Pago de Seña: El usuario debe enviar el comprobante de pago con el número de ticket (ej: TKT-...) como descripción de la imagen o el documento, solo una vez que el ticket esté CONFIRMADO.
+- Instrucciones: Si el usuario pregunta cómo pagar o cuánto debe por un ticket CONFIRMADO, usá get_payment_instructions para darle los detalles exactos. IMPORTANTE: nunca compartas ni menciones el payment_link con el usuario; omití ese campo por completo.
+- Cuando el pago de la seña se completa, el sistema envía automáticamente el QR de check-in al usuario.
 
 Modificación: get_reservation_status -> verificar disponibilidad del nuevo turno con get_availability -> confirmar -> confirm_modification.
 

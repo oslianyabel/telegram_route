@@ -15,6 +15,7 @@ from chatbot.ai_agent.models import (
     ERPTelegramControlRequest,
     ERPTicketStatusRequest,
     ERPWhatsAppControlRequest,
+    PaymentInstructions,
     TicketDecision,
 )
 from chatbot.ai_agent.tools.erp_utils import extract_erp_data
@@ -38,9 +39,9 @@ WHATSAPP_WINDOW_HOURS: int = 24
 
 _TICKET_MESSAGES: dict[TicketDecision, str] = {
     TicketDecision.APPROVED: (
-        "✅ ¡Buenas noticias! Tu reserva *{ticket_id}* ha sido *confirmada*. "
+        "✅ ¡Buenas noticias! Tu reserva *{ticket_id}* ha sido *confirmada* por el establecimiento. "
         "{observations}"
-        "¡Te esperamos!"
+        "Para completar la reserva, realizá el pago de la seña siguiendo las instrucciones que te enviamos a continuación. ¡Te esperamos! 🧀"
     ),
     TicketDecision.REJECTED: (
         "Lo sentimos, tu reserva *{ticket_id}* ha sido *rechazada*. "
@@ -283,7 +284,69 @@ async def notify_ticket_status(body: ERPTicketStatusRequest) -> dict[str, str]:
         body.ticket_id,
         body.new_status,
     )
+
+    # When the establishment approves the reservation, also send payment instructions
+    # so the customer knows how much to pay and where.
+    if body.new_status == TicketDecision.APPROVED:
+        await _send_payment_instructions(phone=phone, ticket_id=body.ticket_id)
+        await services.register_confirmed_ticket(
+            ticket_id=body.ticket_id, phone=phone
+        )
+
     return {"status": "ok", "phone": phone}
+
+
+async def _send_payment_instructions(phone: str, ticket_id: str) -> None:
+    """Obtiene las instrucciones de pago del depósito y las envía al cliente por WhatsApp.
+
+    Args:
+        phone: Número de WhatsApp del cliente.
+        ticket_id: Identificador del ticket cuyo depósito se debe pagar.
+    """
+    logger.info(
+        "[_send_payment_instructions] phone=%s ticket_id=%s", phone, ticket_id
+    )
+    try:
+        pay_resp = await erp_client.post(
+            f"{ERP_BASE_PATH}.deposit_controller.get_payment_link_or_instructions",
+            json={"ticket_id": ticket_id},
+            timeout=ERP_TIMEOUT,
+        )
+        pay_resp.raise_for_status()
+        pay_data = extract_erp_data(pay_resp.json())
+        pay_info = PaymentInstructions.model_validate(pay_data)
+    except Exception as exc:
+        logger.error(
+            "[_send_payment_instructions] Error al obtener instrucciones de pago ticket=%s: %s",
+            ticket_id,
+            exc,
+        )
+        await notify_error(
+            exc,
+            context=f"_send_payment_instructions | ticket={ticket_id} | phone={phone}",
+        )
+        return
+
+    lines = [
+        "💳 Instrucciones de pago de la seña",
+        f"Ticket: {pay_info.ticket_id}",
+        f"Monto requerido: {pay_info.amount_required} UYU",
+        f"Monto pagado: {pay_info.amount_paid or 0} UYU",
+        f"Monto restante: {pay_info.amount_remaining} UYU",
+    ]
+    if pay_info.instructions:
+        lines.append(f"\n{pay_info.instructions}")
+    lines.append(
+        f"\n📎 Enviá el comprobante de pago con el número {ticket_id} "
+        "como descripción de la imagen o del documento."
+    )
+
+    pay_msg = "\n".join(lines)
+    ok = await whatsapp_manager.send_text(user_number=phone, text=pay_msg)
+    if not ok:
+        logger.error(
+            "[_send_payment_instructions] Error enviando instrucciones a %s", phone
+        )
 
 
 # ---------------------------------------------------------------------------
