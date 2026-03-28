@@ -20,7 +20,7 @@ from chatbot.ai_agent.tools.ocr import extract_payment_receipt
 
 # Ruta absoluta resuelta desde la raíz del proyecto
 _RECEIPT_PATH: Path = (
-    Path(__file__).parents[3] / "static" / "images" / "comprobante.jpeg"
+    Path(__file__).parents[3] / "static" / "images" / "comprobante2.png"
 )
 
 

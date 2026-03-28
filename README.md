@@ -76,6 +76,17 @@ cheese_bot/
 4. Agent calls ERP tools as needed and returns a structured response
 5. Response sent back to the user through the corresponding channel
 
+**Background workers:**
+
+Two async workers run continuously alongside the API server:
+
+| Worker | File | Scan interval | Purpose |
+|---|---|---|---|
+| Lead Follow-up | `chatbot/reminders/lead_followup.py` | 30 min | Sends a personalised re-engagement message to users who showed interest (lead detected) but did not complete a reservation, starting x number of hours after their last message |
+| Deposit Reminder | `chatbot/reminders/deposit_reminder.py` | 15 min | Sends a payment reminder to users whose ticket was confirmed by the establishment but whose deposit (`amount_remaining > 0`) has not been paid 12 hours after confirmation |
+
+Both workers detect the user's channel (WhatsApp or Telegram) from the stored conversation history and deliver the message through the appropriate channel.
+
 ---
 
 ## Environment Variables

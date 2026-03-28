@@ -5,7 +5,7 @@ import logging
 from pydantic_ai import RunContext
 
 from chatbot.ai_agent.dependencies import AgentDeps
-from chatbot.lead_followup import FOLLOW_UP_OPTOUT_MARKER
+from chatbot.reminders.lead_followup import FOLLOW_UP_OPTOUT_MARKER
 
 logger = logging.getLogger(__name__)
 

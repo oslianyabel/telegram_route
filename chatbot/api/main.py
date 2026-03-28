@@ -15,8 +15,8 @@ from chatbot.core.config import config
 from chatbot.core.logging_conf import init_logging
 from chatbot.core.sentry import init_sentry
 from chatbot.db.services import services
-from chatbot.deposit_reminder import deposit_reminder_worker
-from chatbot.lead_followup import lead_followup_worker
+from chatbot.reminders.deposit_reminder import deposit_reminder_worker
+from chatbot.reminders.lead_followup import lead_followup_worker
 
 init_logging()
 logger = logging.getLogger(__name__)

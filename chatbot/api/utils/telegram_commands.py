@@ -5,17 +5,24 @@ This allows power users to query the ERP catalog and manage their contact
 data without going through the LLM layer.
 
 Commands registered:
-  /list_experiences          [buscar] [fecha=YYYY-MM-DD]
-  /get_experience_detail     <id>
-  /list_routes               [buscar]
-  /get_route_detail          <id>
+  /list_experiences               [fecha=YYYY-MM-DD]
+  /get_experience_detail          <id>
+  /list_routes
+  /get_route_detail               <id>
   /list_establishments
-  /get_establishment_details <id>
-  /get_availability          <experience_id> <date_from DD-MM-YYYY> <date_to DD-MM-YYYY>
-  /get_route_availability    <route_id> <fecha> <personas>
+  /get_establishment_details      <id>
+  /get_availability               <experience_id> <date_from DD-MM-YYYY> <date_to DD-MM-YYYY>
+  /list_available_experiences     <date_from DD-MM-YYYY> <date_to DD-MM-YYYY>
+  /get_route_availability         <route_id> <fecha> <personas>
   /resolve_or_create_contact
-  /update_contact            nombre=X  email=X  telefono=X
-  /upsert_lead               [Experience|Route]
+  /update_contact                 nombre=X  email=X  telefono=X
+  /upsert_lead                    [Experience|Route]
+  /get_reservation_status         <ticket_id>
+  /get_reservations               [PENDING|CONFIRMED|CANCELLED|EXPIRED]
+  /get_route_booking_status       <route_booking_id>
+  /get_itinerary
+  /cancel_reservation             <ticket_id>
+  /stop_followups
 """
 
 from __future__ import annotations
@@ -33,6 +40,13 @@ from telegram.ext import ContextTypes
 from chatbot.ai_agent.context import webhook_context_manager
 from chatbot.ai_agent.dependencies import AgentDeps
 from chatbot.ai_agent.instructions import resolve_or_create_contact
+from chatbot.ai_agent.tools.booking import (
+    cancel_reservation,
+    get_customer_itinerary,
+    get_reservation_status,
+    get_reservations_by_phone,
+    get_route_booking_status,
+)
 from chatbot.ai_agent.tools.catalog import (
     get_availability,
     get_establishment_details,
@@ -41,9 +55,11 @@ from chatbot.ai_agent.tools.catalog import (
     get_route_detail,
     list_establishments,
     list_experiences,
+    list_experiences_by_availability,
     list_routes,
 )
 from chatbot.ai_agent.tools.customer import update_contact, upsert_lead
+from chatbot.ai_agent.tools.notifications import stop_lead_followups
 from chatbot.db.services import services
 from chatbot.messaging.telegram_notifier import notify_error
 from chatbot.messaging.whatsapp import WhatsAppManager
@@ -52,9 +68,11 @@ logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Module-level ERP client — set by telegram_bot._post_init via init()
+# Phone registry — shared reference from telegram_bot via init_phones()
 # ---------------------------------------------------------------------------
 _erp_client: httpx.AsyncClient | None = None
 _noop_whatsapp = WhatsAppManager()
+_phones_registry: dict[str, str] = {}
 
 _MAX_MSG_LEN = 4000  # Telegram limit is 4096; leave margin for Markdown escaping
 
@@ -64,6 +82,13 @@ def init(erp_client: httpx.AsyncClient) -> None:
     global _erp_client
     _erp_client = erp_client
     logger.debug("telegram_commands: ERP client initialized")
+
+
+def init_phones(phones: dict[str, str]) -> None:
+    """Share the phone registry from telegram_bot. Must be called during bot post_init."""
+    global _phones_registry
+    _phones_registry = phones
+    logger.debug("telegram_commands: phones registry linked")
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +104,7 @@ def _build_ctx(chat_id: str) -> RunContext[AgentDeps]:
         db_services=services,
         whatsapp_client=_noop_whatsapp,
         webhook_context=webhook_context_manager,
-        user_phone="",
+        user_phone=_phones_registry.get(chat_id, ""),
         telegram_id=chat_id,
     )
     ctx: RunContext[AgentDeps] = RunContext[AgentDeps].__new__(RunContext)  # type: ignore[reportCallIssue]
@@ -152,39 +177,29 @@ async def _send_error(
 
 
 # ---------------------------------------------------------------------------
-# /list_experiences [buscar] [fecha=YYYY-MM-DD]
+# /list_experiences [fecha=YYYY-MM-DD]
 # ---------------------------------------------------------------------------
 
 
 async def cmd_list_experiences(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """/list_experiences [buscar] [fecha=YYYY-MM-DD] — lista las experiencias del catálogo."""
+    """/list_experiences [fecha=YYYY-MM-DD] — lista las experiencias del catálogo."""
     if not update.message or not update.effective_chat:
         return
     chat_id = str(update.effective_chat.id)
     args: list[str] = context.args or []
 
-    search: str | None = None
     date: str | None = None
-    positional: list[str] = []
-
     for arg in args:
         if arg.startswith("fecha="):
             date = arg.partition("=")[2]
-        elif "=" not in arg:
-            positional.append(arg)
-
-    if positional:
-        search = " ".join(positional)
 
     ctx = _build_ctx(chat_id)
     try:
-        experiences = await list_experiences(ctx, search=search, date=date)
+        experiences = await list_experiences(ctx, date=date)
     except Exception as exc:
-        await _send_error(
-            update, exc, f"cmd_list_experiences search={search} date={date}"
-        )
+        await _send_error(update, exc, f"cmd_list_experiences date={date}")
         return
 
     if not experiences:
@@ -237,27 +252,25 @@ async def cmd_get_experience_detail(
 
 
 # ---------------------------------------------------------------------------
-# /list_routes [buscar]
+# /list_routes
 # ---------------------------------------------------------------------------
 
 
 async def cmd_list_routes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/list_routes [buscar] — lista las rutas temáticas."""
+    """/list_routes — lista las rutas temáticas."""
     if not update.message or not update.effective_chat:
         return
     chat_id = str(update.effective_chat.id)
-    args: list[str] = context.args or []
-    search: str | None = " ".join(args) if args else None
 
     ctx = _build_ctx(chat_id)
     try:
-        routes = await list_routes(ctx, search=search)
+        routes = await list_routes(ctx)
     except Exception as exc:
-        await _send_error(update, exc, f"cmd_list_routes search={search}")
+        await _send_error(update, exc, "cmd_list_routes")
         return
 
     if not routes:
-        await update.message.reply_text("No se encontraron rutas con esos filtros.")
+        await update.message.reply_text("No se encontraron rutas.")
         return
 
     lines = [f"🗺️ *Rutas* ({len(routes)} resultados)\n"]
@@ -484,14 +497,14 @@ async def cmd_resolve_or_create_contact(
 
 
 # ---------------------------------------------------------------------------
-# /update_contact [nombre=X] [email=X] [telefono=X]
+# /update_contact [nombre=X] [email=X]
 # ---------------------------------------------------------------------------
 
 
 async def cmd_update_contact(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """/update_contact nombre=X email=X telefono=X — actualiza tu contacto en el ERP."""
+    """/update_contact nombre=X email=X — actualiza tu contacto en el ERP."""
     if not update.message or not update.effective_chat:
         return
     chat_id = str(update.effective_chat.id)
@@ -499,7 +512,7 @@ async def cmd_update_contact(
 
     if not args:
         await update.message.reply_text(
-            "Uso: `/update_contact [nombre=X] [email=X] [telefono=X]`\n"
+            "Uso: `/update_contact [nombre=X] [email=X]`\n"
             "Ejemplo: `/update_contact nombre=Ana email=ana@test.com`",
             parse_mode="Markdown",
         )
@@ -508,12 +521,11 @@ async def cmd_update_contact(
     kwargs = _parse_kwargs(args)
     name: str | None = kwargs.get("nombre")
     email: str | None = kwargs.get("email")
-    phone: str | None = kwargs.get("telefono")
 
-    if not any([name, email, phone]):
+    if not any([name, email]):
         await update.message.reply_text(
             "❌ No se detectaron campos válidos. "
-            "Usa `nombre=X`, `email=X` o `telefono=X`.",
+            "Usa `nombre=X` o `email=X`.",
             parse_mode="Markdown",
         )
         return
@@ -525,7 +537,7 @@ async def cmd_update_contact(
         return
 
     try:
-        result = await update_contact(ctx, name=name, email=email, phone=phone)
+        result = await update_contact(ctx, name=name, email=email)
     except Exception as exc:
         await _send_error(update, exc, f"cmd_update_contact kwargs={kwargs}")
         return
@@ -559,3 +571,264 @@ async def cmd_upsert_lead(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     await update.message.reply_text(_to_json_block(lead), parse_mode="Markdown")
+
+
+# ---------------------------------------------------------------------------
+# /get_reservation_status <ticket_id>
+# ---------------------------------------------------------------------------
+
+
+async def cmd_get_reservation_status(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """/get_reservation_status <ticket_id> — estado y detalle de un ticket."""
+    if not update.message or not update.effective_chat:
+        return
+    chat_id = str(update.effective_chat.id)
+    args: list[str] = context.args or []
+
+    if not args:
+        await update.message.reply_text(
+            "Uso: `/get_reservation_status <ticket_id>`\n"
+            "Ejemplo: `/get_reservation_status TKT-2026-03-00018`",
+            parse_mode="Markdown",
+        )
+        return
+
+    ticket_id = args[0].upper()
+    ctx = _build_ctx(chat_id)
+    try:
+        detail = await get_reservation_status(ctx, reservation_id=ticket_id)
+    except Exception as exc:
+        await _send_error(update, exc, f"cmd_get_reservation_status id={ticket_id}")
+        return
+
+    await update.message.reply_text(_to_json_block(detail), parse_mode="Markdown")
+
+
+# ---------------------------------------------------------------------------
+# /get_reservations [PENDING|CONFIRMED|CANCELLED|EXPIRED]
+# ---------------------------------------------------------------------------
+
+
+async def cmd_get_reservations(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """/get_reservations [status] — lista las reservas del usuario por teléfono registrado."""
+    if not update.message or not update.effective_chat:
+        return
+    chat_id = str(update.effective_chat.id)
+    args: list[str] = context.args or []
+
+    status: str | None = args[0].upper() if args else None
+    valid_statuses = {"PENDING", "CONFIRMED", "CANCELLED", "EXPIRED"}
+    if status and status not in valid_statuses:
+        await update.message.reply_text(
+            f"❌ Estado inválido `{status}`. Valores permitidos: {', '.join(sorted(valid_statuses))}",
+            parse_mode="Markdown",
+        )
+        return
+
+    ctx = _build_ctx(chat_id)
+    if not ctx.deps.user_phone:
+        await update.message.reply_text(
+            "⚠️ No tienes un teléfono registrado. Usa `/change_phone` o escríbeme tu número primero.",
+            parse_mode="Markdown",
+        )
+        return
+
+    try:
+        result = await get_reservations_by_phone(ctx, status=status)
+    except Exception as exc:
+        await _send_error(update, exc, f"cmd_get_reservations status={status}")
+        return
+
+    if not result.tickets:
+        msg = "No se encontraron reservas"
+        if status:
+            msg += f" con estado `{status}`"
+        await update.message.reply_text(msg + ".", parse_mode="Markdown")
+        return
+
+    lines = [f"🎟️ *Reservas* ({result.total} en total)\n"]
+    for ticket in result.tickets:
+        lines.append(
+            f"• `{ticket.name}` — {ticket.experience_name or ticket.experience or ''} — *{ticket.status}*"
+        )
+    if result.total and result.total > len(result.tickets):
+        lines.append(
+            f"\n_Mostrando {len(result.tickets)} de {result.total}. "
+            "Usa `/get_reservations` con filtro de estado para ver más._"
+        )
+    await update.message.reply_text(_truncate("\n".join(lines)), parse_mode="Markdown")
+
+
+# ---------------------------------------------------------------------------
+# /get_route_booking_status <route_booking_id>
+# ---------------------------------------------------------------------------
+
+
+async def cmd_get_route_booking_status(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """/get_route_booking_status <route_booking_id> — estado de una reserva de ruta."""
+    if not update.message or not update.effective_chat:
+        return
+    chat_id = str(update.effective_chat.id)
+    args: list[str] = context.args or []
+
+    if not args:
+        await update.message.reply_text(
+            "Uso: `/get_route_booking_status <route_booking_id>`\n"
+            "Ejemplo: `/get_route_booking_status RB-2026-03-00013`",
+            parse_mode="Markdown",
+        )
+        return
+
+    route_booking_id = args[0].upper()
+    ctx = _build_ctx(chat_id)
+    try:
+        status = await get_route_booking_status(ctx, route_booking_id=route_booking_id)
+    except Exception as exc:
+        await _send_error(
+            update, exc, f"cmd_get_route_booking_status id={route_booking_id}"
+        )
+        return
+
+    await update.message.reply_text(_to_json_block(status), parse_mode="Markdown")
+
+
+# ---------------------------------------------------------------------------
+# /get_itinerary
+# ---------------------------------------------------------------------------
+
+
+async def cmd_get_itinerary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/get_itinerary — itinerario completo del cliente (rutas y experiencias)."""
+    if not update.message or not update.effective_chat:
+        return
+    chat_id = str(update.effective_chat.id)
+
+    ctx = _build_ctx(chat_id)
+    error = await _resolve(ctx)
+    if error:
+        await update.message.reply_text(f"❌ {error}", parse_mode="Markdown")
+        return
+
+    try:
+        itinerary = await get_customer_itinerary(ctx)
+    except Exception as exc:
+        await _send_error(update, exc, "cmd_get_itinerary")
+        return
+
+    await update.message.reply_text(_to_json_block(itinerary), parse_mode="Markdown")
+
+
+# ---------------------------------------------------------------------------
+# /cancel_reservation <ticket_id>
+# ---------------------------------------------------------------------------
+
+
+async def cmd_cancel_reservation(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """/cancel_reservation <ticket_id> — cancela un ticket (acción irreversible)."""
+    if not update.message or not update.effective_chat:
+        return
+    chat_id = str(update.effective_chat.id)
+    args: list[str] = context.args or []
+
+    if not args:
+        await update.message.reply_text(
+            "Uso: `/cancel_reservation <ticket_id>`\n"
+            "Ejemplo: `/cancel_reservation TKT-2026-03-00018`\n"
+            "⚠️ Esta acción es irreversible.",
+            parse_mode="Markdown",
+        )
+        return
+
+    ticket_id = args[0].upper()
+    ctx = _build_ctx(chat_id)
+    try:
+        result = await cancel_reservation(ctx, reservation_id=ticket_id, confirmed=True)
+    except Exception as exc:
+        await _send_error(update, exc, f"cmd_cancel_reservation id={ticket_id}")
+        return
+
+    await update.message.reply_text(_to_json_block(result), parse_mode="Markdown")
+
+
+# ---------------------------------------------------------------------------
+# /list_available_experiences <date_from DD-MM-YYYY> <date_to DD-MM-YYYY>
+# ---------------------------------------------------------------------------
+
+
+async def cmd_list_available_experiences(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """/list_available_experiences <date_from> <date_to> — experiencias con disponibilidad en un rango."""
+    if not update.message or not update.effective_chat:
+        return
+    chat_id = str(update.effective_chat.id)
+    args: list[str] = context.args or []
+
+    if len(args) < 2:  # noqa: PLR2004
+        await update.message.reply_text(
+            "Uso: `/list_available_experiences <date_from> <date_to>`\n"
+            "Ejemplo: `/list_available_experiences 01-04-2026 30-04-2026`",
+            parse_mode="Markdown",
+        )
+        return
+
+    date_from, date_to = args[0], args[1]
+    ctx = _build_ctx(chat_id)
+    try:
+        availabilities = await list_experiences_by_availability(
+            ctx, date_from=date_from, date_to=date_to
+        )
+    except Exception as exc:
+        await _send_error(
+            update,
+            exc,
+            f"cmd_list_available_experiences date_from={date_from} date_to={date_to}",
+        )
+        return
+
+    if not availabilities:
+        await update.message.reply_text(
+            f"No hay experiencias disponibles entre {date_from} y {date_to}."
+        )
+        return
+
+    lines = [f"📅 *Disponibilidad* ({len(availabilities)} experiencias)\n"]
+    for av in availabilities:
+        slot_count = len(av.slots) if av.slots else 0
+        lines.append(f"• `{av.experience_id}` — {av.experience_name or ''} ({slot_count} slots)")
+
+    lines.append(
+        "\nUsa `/get_availability <experience_id> <date_from> <date_to>` para ver los slots en detalle."
+    )
+    await update.message.reply_text(_truncate("\n".join(lines)), parse_mode="Markdown")
+
+
+# ---------------------------------------------------------------------------
+# /stop_followups
+# ---------------------------------------------------------------------------
+
+
+async def cmd_stop_followups(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """/stop_followups — desactiva los mensajes automáticos de seguimiento."""
+    if not update.message or not update.effective_chat:
+        return
+    chat_id = str(update.effective_chat.id)
+
+    ctx = _build_ctx(chat_id)
+    try:
+        msg = await stop_lead_followups(ctx)
+    except Exception as exc:
+        await _send_error(update, exc, "cmd_stop_followups")
+        return
+
+    await update.message.reply_text(f"✅ {msg}")

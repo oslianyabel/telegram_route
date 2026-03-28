@@ -32,7 +32,10 @@ from chatbot.ai_agent.context import webhook_context_manager
 from chatbot.ai_agent.dependencies import AgentDeps
 from chatbot.ai_agent.error_agent import run_error_agent
 from chatbot.ai_agent.summary_agent import summarize_conversation
-from chatbot.ai_agent.tools.ocr import extract_payment_receipt, extract_payment_receipt_from_pdf
+from chatbot.ai_agent.tools.ocr import (
+    extract_payment_receipt,
+    extract_payment_receipt_from_pdf,
+)
 from chatbot.ai_agent.tools.payments import (
     erp_validation_user_message,
     parse_amount,
@@ -41,15 +44,22 @@ from chatbot.ai_agent.tools.payments import (
 )
 from chatbot.api.utils import message_handler, telegram_commands
 from chatbot.api.utils.telegram_commands import (
+    cmd_cancel_reservation,
     cmd_get_availability,
     cmd_get_establishment_details,
     cmd_get_experience_detail,
+    cmd_get_itinerary,
+    cmd_get_reservation_status,
+    cmd_get_reservations,
     cmd_get_route_availability,
+    cmd_get_route_booking_status,
     cmd_get_route_detail,
+    cmd_list_available_experiences,
     cmd_list_establishments,
     cmd_list_experiences,
     cmd_list_routes,
     cmd_resolve_or_create_contact,
+    cmd_stop_followups,
     cmd_update_contact,
     cmd_upsert_lead,
 )
@@ -63,8 +73,10 @@ from chatbot.core.config import config
 from chatbot.core.logging_conf import init_logging
 from chatbot.db.services import services
 from chatbot.erp.client import build_erp_client
+from chatbot.erp.transcript import upload_message_transcript
 from chatbot.messaging.telegram_notifier import notify_error
 from chatbot.messaging.whatsapp import WhatsAppManager
+from chatbot.reminders.lead_followup import CHANNEL_MARKERS, CHANNEL_TELEGRAM
 
 logger = logging.getLogger(__name__)
 
@@ -547,7 +559,7 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         try:
             await services.ensure_system_message(
                 phone=chat_id,
-                message="CHANNEL: telegram",
+                message=CHANNEL_MARKERS[CHANNEL_TELEGRAM],
             )
             await message_handler.save_user_msg(chat_id, incoming_msg)
 
@@ -653,6 +665,15 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await message_handler.save_assistant_msg(chat_id, ai_response, tools_used)
             await update.message.reply_text(ai_response)
             asyncio.create_task(_maybe_compress_history(chat_id, len(history)))
+            assert erp_client is not None
+            asyncio.create_task(
+                upload_message_transcript(
+                    client=erp_client,
+                    phone_number=_user_phones.get(chat_id, chat_id),
+                    user_message=incoming_msg,
+                    bot_response=ai_response,
+                )
+            )
 
         finally:
             typing_task.cancel()
@@ -686,6 +707,7 @@ async def _post_init(application: Application) -> None:
     await services.database.connect()
     erp_client = build_erp_client()
     telegram_commands.init(erp_client)
+    telegram_commands.init_phones(_user_phones)
     logger.info("✅ DB connected and ERP client ready")
 
 
@@ -741,6 +763,21 @@ def build_application() -> Application:
     )
     app.add_handler(CommandHandler("update_contact", cmd_update_contact))
     app.add_handler(CommandHandler("upsert_lead", cmd_upsert_lead))
+
+    # Booking commands — bypass AI agent
+    app.add_handler(
+        CommandHandler("get_reservation_status", cmd_get_reservation_status)
+    )
+    app.add_handler(CommandHandler("get_reservations", cmd_get_reservations))
+    app.add_handler(
+        CommandHandler("get_route_booking_status", cmd_get_route_booking_status)
+    )
+    app.add_handler(CommandHandler("get_itinerary", cmd_get_itinerary))
+    app.add_handler(CommandHandler("cancel_reservation", cmd_cancel_reservation))
+    app.add_handler(
+        CommandHandler("list_available_experiences", cmd_list_available_experiences)
+    )
+    app.add_handler(CommandHandler("stop_followups", cmd_stop_followups))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_message))
     app.add_handler(MessageHandler(filters.PHOTO, _handle_image))

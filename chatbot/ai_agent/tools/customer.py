@@ -27,7 +27,6 @@ async def update_contact(
     ctx: RunContext[AgentDeps],
     name: str | None = None,
     email: str | None = None,
-    phone: str | None = None,
 ) -> UpdateContactResult | str:
     """Update one or more fields of the current contact.
 
@@ -37,28 +36,24 @@ async def update_contact(
         ctx: Agent run context with dependencies.
         name: New display name (only if it differs from the current one).
         email: New email address (only if it differs from the current one).
-        phone: New phone number (use with caution – changes the dedup key).
     """
     logger.info(
-        "[update_contact] contact_id=%s name=%s email=%s phone=%s",
+        "[update_contact] contact_id=%s name=%s email=%s",
         ctx.deps.contact_id,
         name,
         email,
-        phone,
     )
     if not ctx.deps.contact_id:
         raise ValueError("contact_id is required in AgentDeps to update a contact")
 
-    if not any([name, email, phone]):
-        return "No fields to update. Provide at least one of name, email, or phone."
+    if not any([name, email]):
+        return "No fields to update. Provide at least one of name or email."
 
     payload: dict[str, Any] = {"contact_id": ctx.deps.contact_id}
     if name is not None:
         payload["name"] = name
     if email is not None:
         payload["email"] = email
-    if phone is not None:
-        payload["phone"] = phone
 
     response = await ctx.deps.erp_client.post(
         f"{ERP_BASE_PATH}.contact_controller.update_contact",

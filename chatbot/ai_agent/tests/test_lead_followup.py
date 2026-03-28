@@ -11,7 +11,7 @@ from chatbot.ai_agent.context import WebhookContextManager
 from chatbot.ai_agent.dependencies import AgentDeps
 from chatbot.ai_agent.tests.conftest import build_run_context
 from chatbot.ai_agent.tools.notifications import stop_lead_followups
-from chatbot.lead_followup import evaluate_follow_up_eligibility
+from chatbot.reminders.lead_followup import evaluate_follow_up_eligibility
 
 
 @dataclass
