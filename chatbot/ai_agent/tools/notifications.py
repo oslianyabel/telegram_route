@@ -33,7 +33,7 @@ async def stop_lead_followups(ctx: RunContext[AgentDeps]) -> str:
         "[stop_lead_followups] follow-ups disabled for conversation=%s",
         conversation_id,
     )
-    return "Mensajes automáticos de seguimiento desactivados"
+    return "Automatic follow-up messages disabled"
 
 
 async def start_lead_followups(ctx: RunContext[AgentDeps]) -> str:
@@ -59,4 +59,4 @@ async def start_lead_followups(ctx: RunContext[AgentDeps]) -> str:
         "[start_lead_followups] follow-ups re-enabled for conversation=%s",
         conversation_id,
     )
-    return "Mensajes automáticos de seguimiento reactivados"
+    return "Automatic follow-up messages re-enabled"

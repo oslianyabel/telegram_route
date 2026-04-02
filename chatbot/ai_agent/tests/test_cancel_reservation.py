@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import date, timedelta
 
+import httpx
 import pytest
 from pydantic_ai import RunContext
 
@@ -33,12 +34,24 @@ from chatbot.ai_agent.tools.booking import (
 from chatbot.ai_agent.tools.catalog import get_availability, list_experiences
 
 _TEST_CONTACT_ID = "+5351054484"
+_TEST_USER_NAME = "Test Customer"
 _TEST_PARTY_SIZE = 1
+
+
+def _skip_if_erp_unavailable(exc: httpx.HTTPError) -> None:
+    """Skip the test when the real ERP is temporarily unavailable."""
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code >= 500:
+        pytest.skip(
+            f"ERP temporalmente no disponible ({exc.response.status_code}) "
+            f"en {exc.request.url}"
+        )
+    if isinstance(exc, httpx.RequestError):
+        pytest.skip(f"No se pudo contactar al ERP: {exc}")
 
 
 async def _find_available_slot(
     ctx: RunContext[AgentDeps],
-) -> tuple[str, str]:
+) -> tuple[str, str, str]:
     """Busca el primer (experience_id, slot_id) con disponibilidad en el ERP."""
     experiences = await list_experiences(ctx)
     if not experiences:
@@ -63,7 +76,9 @@ async def _find_available_slot(
                     f"  [find_slot] experience={exp.experience_id} "
                     f"slot={slot.slot_id} date={slot.date} capacity={capacity}"
                 )
-                return exp.experience_id, slot.slot_id
+                if not slot.date:
+                    continue
+                return exp.experience_id, slot.slot_id, slot.date
 
     pytest.skip(
         "No se encontró ningún slot con disponibilidad. "
@@ -91,29 +106,41 @@ async def test_create_and_cancel_reservation(
     4. Llama cancel_reservation(confirmed=True) → cancela y retorna CancellationResult.
     """
     # -- 1. Buscar slot disponible (no necesita contact_id) ------------------
-    experience_id, slot_id = await _find_available_slot(ctx)
-    print(f"\n  experience_id={experience_id}  slot_id={slot_id}")
+    try:
+        experience_id, slot_id, selected_date = await _find_available_slot(ctx)
+    except httpx.HTTPError as exc:
+        _skip_if_erp_unavailable(exc)
+        raise
+    print(
+        f"\n  experience_id={experience_id}  slot_id={slot_id} "
+        f"selected_date={selected_date}"
+    )
 
     # -- 2. Crear reserva PENDING (requiere contact_id) ----------------------
-    booking_ctx = ctx_factory(contact_id=_TEST_CONTACT_ID)
+    booking_ctx = ctx_factory(contact_id=_TEST_CONTACT_ID, user_name=_TEST_USER_NAME)
 
     try:
-        ticket: PendingTicket = await create_pending_reservation(
+        ticket_result = await create_pending_reservation(
             booking_ctx,
             experience_id=experience_id,
             slot_id=slot_id,
             party_size=_TEST_PARTY_SIZE,
+            selected_date=selected_date,
         )
+    except httpx.HTTPError as exc:
+        _skip_if_erp_unavailable(exc)
+        raise
     except Exception as exc:
         # Imprimir el body de la respuesta ERP si está disponible
         response_obj = getattr(exc, "response", None)
         if response_obj is not None:
             print(f"  [ERP error body] {response_obj.text}")
         raise
+    assert isinstance(ticket_result, PendingTicket)
+    ticket = ticket_result
     print(f"  ticket_id={ticket.ticket_id}  status={ticket.status}")
     print(f"  expires_at={ticket.expires_at}")
 
-    assert isinstance(ticket, PendingTicket)
     assert ticket.ticket_id
     assert ticket.status == "PENDING"
 
@@ -130,9 +157,13 @@ async def test_create_and_cancel_reservation(
     assert ticket.ticket_id in unconfirmed_response
 
     # -- 4. Confirmar la cancelación -----------------------------------------
-    result = await cancel_reservation(
-        booking_ctx, reservation_id=ticket.ticket_id, confirmed=True
-    )
+    try:
+        result = await cancel_reservation(
+            booking_ctx, reservation_id=ticket.ticket_id, confirmed=True
+        )
+    except httpx.HTTPError as exc:
+        _skip_if_erp_unavailable(exc)
+        raise
     assert isinstance(result, CancellationResult)
 
     print(f"\n  [confirmed=True] ticket_id={result.ticket_id}")

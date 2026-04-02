@@ -10,10 +10,10 @@ import httpx
 from chatbot.ai_agent.models import ERP_BASE_PATH, PaymentInstructions
 from chatbot.ai_agent.tools.erp_utils import extract_erp_data
 from chatbot.db.services import Services
-from chatbot.reminders.lead_followup import CHANNEL_TELEGRAM, infer_channel
 from chatbot.messaging.telegram_notifier import notify_error
 from chatbot.messaging.telegram_notifier import send_message as send_telegram_message
 from chatbot.messaging.whatsapp import whatsapp_manager
+from chatbot.reminders.lead_followup import CHANNEL_TELEGRAM, infer_channel
 
 logger = logging.getLogger(__name__)
 
@@ -22,15 +22,15 @@ SCAN_INTERVAL_SECONDS: int = 900  # 15 minutos
 ERP_TIMEOUT_SECONDS: float = 15.0
 
 _REMINDER_MESSAGE: str = (
-    "⏰ *Recordatorio: pago de seña pendiente*\n\n"
-    "Tu reserva *{ticket_id}* fue confirmada por el establecimiento, pero el pago de la seña aún no se ha registrado.\n\n"
-    "💳 Instrucciones de pago de la seña\n"
+    "⏰ *Reminder: pending deposit payment*\n\n"
+    "Your reservation *{ticket_id}* was confirmed by the establishment, but the deposit payment has not been registered yet.\n\n"
+    "💳 Deposit payment instructions\n"
     "Ticket: {ticket_id}\n"
-    "Monto requerido: {amount_required} UYU\n"
-    "Monto pagado: {amount_paid} UYU\n"
-    "Monto restante: {amount_remaining} UYU"
+    "Required amount: {amount_required} UYU\n"
+    "Amount paid: {amount_paid} UYU\n"
+    "Amount remaining: {amount_remaining} UYU"
     "{instructions_block}\n\n"
-    "📎 Enviá el comprobante de pago con el número {ticket_id} como descripción de la imagen o del documento."
+    "📎 Send the payment receipt with the number {ticket_id} as the image or document caption."
 )
 
 
@@ -49,7 +49,7 @@ async def _get_payment_instructions(
     """
     try:
         response = await erp_client.post(
-            f"{ERP_BASE_PATH}.deposit_controller.get_payment_link_or_instructions",
+            f"{ERP_BASE_PATH}.deposit_controller.get_deposit_instructions",
             json={"ticket_id": ticket_id},
             timeout=ERP_TIMEOUT_SECONDS,
         )

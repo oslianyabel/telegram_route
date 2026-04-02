@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import date
 from typing import Any
 
 from pydantic_ai import ModelRetry, RunContext
@@ -34,27 +35,40 @@ async def create_pending_reservation(
     experience_id: str,
     slot_id: str,
     party_size: int,
-) -> PendingTicket:
+    selected_date: str,
+) -> PendingTicket | str:
     """Create a PENDING ticket reservation for an experience slot.
 
     The ticket expires shortly after creation. The user must confirm payment
-    before it becomes CONFIRMED. Requires a resolved contact_id in deps.
+    before it becomes CONFIRMED. Requires a resolved contact_id and user_name in deps.
+    If user_name is missing, ask the user for their name and call update_contact first.
 
     Args:
         ctx: Agent run context with dependencies.
         experience_id: ERP id of the experience to book.
         slot_id: ERP id of the slot to reserve.
         party_size: Number of people in the group.
+        selected_date: Reservation date in YYYY-MM-DD format.
     """
     logger.info(
-        "[create_pending_reservation] contact_id=%s experience_id=%s slot_id=%s party_size=%s",
+        "[create_pending_reservation] contact_id=%s experience_id=%s slot_id=%s party_size=%s selected_date=%s",
         ctx.deps.contact_id,
         experience_id,
         slot_id,
         party_size,
+        selected_date,
     )
     if not ctx.deps.contact_id:
         raise ValueError("contact_id is required in AgentDeps to create a reservation")
+    if not ctx.deps.user_name:
+        return "Antes de crear la reserva necesito el nombre del cliente. Pídele su nombre al usuario y llama a update_contact con el valor obtenido."
+    try:
+        date.fromisoformat(selected_date)
+    except ValueError as error:
+        raise ModelRetry(
+            "selected_date es obligatorio y debe estar en formato YYYY-MM-DD. "
+            "Usa la fecha exacta del slot seleccionado antes de volver a llamar a create_pending_reservation."
+        ) from error
 
     response = await ctx.deps.erp_client.post(
         f"{ERP_BASE_PATH}.ticket_controller.create_pending_reservation",
@@ -63,6 +77,7 @@ async def create_pending_reservation(
             "experience_id": experience_id,
             "slot_id": slot_id,
             "party_size": party_size,
+            "selected_date": selected_date,
         },
         timeout=ERP_TIMEOUT_SECONDS,
     )
@@ -227,12 +242,14 @@ async def create_route_reservation(
     date_from: str,
     date_to: str,
     party_size: int,
-) -> PendingRouteBooking:
+) -> PendingRouteBooking | str:
     """Create a PENDING route booking that bundles multiple experience tickets.
 
     After calling this tool, ALWAYS call get_route_booking_status with the
     returned route_booking_id to retrieve the individual ticket_id of each
     experience in the route and share them with the user.
+    Requires a resolved contact_id and user_name in deps.
+    If user_name is missing, ask the user for their name and call update_contact first.
 
     Args:
         ctx: Agent run context with dependencies.
@@ -253,6 +270,8 @@ async def create_route_reservation(
         raise ValueError(
             "contact_id is required in AgentDeps to create a route reservation"
         )
+    if not ctx.deps.user_name:
+        return "Antes de crear la reserva de ruta necesito el nombre del cliente. Pídele su nombre al usuario y llama a update_contact con el valor obtenido."
 
     response = await ctx.deps.erp_client.post(
         f"{ERP_BASE_PATH}.route_booking_controller.create_route_reservation",

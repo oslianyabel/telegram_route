@@ -26,6 +26,9 @@ logger = logging.getLogger(__name__)
 
 AUTH_PATH = "/api/method/cheese.api.v1.auth_controller.token"
 ERP_TIMEOUT_SECONDS: float = 15.0
+AUTH_RETRY_ATTEMPTS: int = 3
+AUTH_RETRY_DELAY_SECONDS: float = 1.0
+RETRYABLE_AUTH_STATUS_CODES: frozenset[int] = frozenset({502, 503, 504})
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +80,7 @@ class ERPTokenAuth(httpx.Auth):
         """Attach token, yield request, refresh and retry once on 401."""
         await self._ensure_token()
         request.headers["Authorization"] = self._auth_header()
-        request.headers["Content-Type"] = "application/json"
+        request.headers.setdefault("Content-Type", "application/json")
 
         response: httpx.Response = yield request
 
@@ -108,16 +111,44 @@ class ERPTokenAuth(httpx.Auth):
     async def _fetch_token(self) -> None:
         """Call the ERP auth endpoint and store the resulting token."""
         logger.info("[ERPTokenAuth] fetching token for user %s", self._username)
-        async with httpx.AsyncClient(timeout=ERP_TIMEOUT_SECONDS) as client:
-            response = await client.post(
-                f"{self._base_url}{AUTH_PATH}",
-                json={
-                    "grant_type": "password",
-                    "username": self._username,
-                    "password": self._password,
-                },
-            )
-            response.raise_for_status()
+        for attempt in range(1, AUTH_RETRY_ATTEMPTS + 1):
+            try:
+                async with httpx.AsyncClient(timeout=ERP_TIMEOUT_SECONDS) as client:
+                    response = await client.post(
+                        f"{self._base_url}{AUTH_PATH}",
+                        json={
+                            "grant_type": "password",
+                            "username": self._username,
+                            "password": self._password,
+                        },
+                    )
+                    response.raise_for_status()
+                break
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code
+                if (
+                    status_code not in RETRYABLE_AUTH_STATUS_CODES
+                    or attempt == AUTH_RETRY_ATTEMPTS
+                ):
+                    raise
+                logger.warning(
+                    "[ERPTokenAuth] token fetch failed with %s on attempt %s/%s; retrying in %.1fs",
+                    status_code,
+                    attempt,
+                    AUTH_RETRY_ATTEMPTS,
+                    AUTH_RETRY_DELAY_SECONDS,
+                )
+            except httpx.RequestError:
+                if attempt == AUTH_RETRY_ATTEMPTS:
+                    raise
+                logger.warning(
+                    "[ERPTokenAuth] token fetch request error on attempt %s/%s; retrying in %.1fs",
+                    attempt,
+                    AUTH_RETRY_ATTEMPTS,
+                    AUTH_RETRY_DELAY_SECONDS,
+                )
+
+            await asyncio.sleep(AUTH_RETRY_DELAY_SECONDS)
 
         payload: dict[str, Any] = response.json()
         data = payload["message"]["data"]

@@ -182,12 +182,17 @@ async def notify_slow_response(
         logger.error(f"Failed to send slow response Telegram notification: {http_err}")
 
 
-async def send_message(chat_id: str, text: str) -> bool:
+async def send_message(
+    chat_id: str,
+    text: str,
+    parse_mode: str | None = None,
+) -> bool:
     """Envía un mensaje de texto a cualquier chat de Telegram.
 
     Args:
         chat_id: ID del chat de Telegram del destinatario.
         text: Texto a enviar.
+        parse_mode: Modo de parseo opcional soportado por Telegram.
 
     Returns:
         True si el mensaje se envió correctamente, False en caso de error.
@@ -196,9 +201,12 @@ async def send_message(chat_id: str, text: str) -> bool:
     url = TELEGRAM_API_URL.format(token=config.TELEGRAM_BOT_TOKEN_NOTIFIER)
     try:
         async with httpx.AsyncClient(timeout=_SEND_TIMEOUT) as client:
+            payload: dict[str, str] = {"chat_id": chat_id, "text": text}
+            if parse_mode:
+                payload["parse_mode"] = parse_mode
             response = await client.post(
                 url,
-                json={"chat_id": chat_id, "text": text},
+                json=payload,
             )
             if not response.is_success:
                 logger.error(

@@ -14,11 +14,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
+from typing import Any
 
 import httpx
+from pydantic import ValidationError
 from pydantic_ai.exceptions import UsageLimitExceeded
-from telegram import Update
+from telegram import Message, Update
 from telegram.constants import ChatAction
+from telegram.error import TelegramError
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -31,7 +35,9 @@ from chatbot.ai_agent import get_cheese_agent
 from chatbot.ai_agent.context import webhook_context_manager
 from chatbot.ai_agent.dependencies import AgentDeps
 from chatbot.ai_agent.error_agent import run_error_agent
+from chatbot.ai_agent.models import ERP_BASE_PATH, SurveyResult
 from chatbot.ai_agent.summary_agent import summarize_conversation
+from chatbot.ai_agent.tools.erp_utils import extract_erp_data
 from chatbot.ai_agent.tools.ocr import (
     extract_payment_receipt,
     extract_payment_receipt_from_pdf,
@@ -43,12 +49,23 @@ from chatbot.ai_agent.tools.payments import (
     validate_ticket_ownership,
 )
 from chatbot.api.utils import message_handler, telegram_commands
+from chatbot.api.utils.qr import (
+    build_qr_caption,
+    build_qr_image_url,
+    fetch_reservation_qr,
+)
+from chatbot.api.utils.survey_feedback import (
+    clear_pending_survey,
+    extract_survey_feedback,
+    get_pending_survey,
+)
 from chatbot.api.utils.telegram_commands import (
     cmd_cancel_reservation,
     cmd_get_availability,
     cmd_get_establishment_details,
     cmd_get_experience_detail,
     cmd_get_itinerary,
+    cmd_get_phone,
     cmd_get_reservation_status,
     cmd_get_reservations,
     cmd_get_route_availability,
@@ -61,6 +78,7 @@ from chatbot.api.utils.telegram_commands import (
     cmd_resolve_or_create_contact,
     cmd_start_followups,
     cmd_stop_followups,
+    cmd_test_dev_notifications,
     cmd_update_contact,
     cmd_upsert_lead,
 )
@@ -82,6 +100,7 @@ from chatbot.reminders.lead_followup import CHANNEL_MARKERS, CHANNEL_TELEGRAM
 logger = logging.getLogger(__name__)
 
 HISTORY_SUMMARY_THRESHOLD: int = 30
+ERP_TIMEOUT_SECONDS: float = 15.0
 
 # ---------------------------------------------------------------------------
 # ERP client — created in post_init, closed in post_shutdown
@@ -95,6 +114,17 @@ erp_client: httpx.AsyncClient | None = None
 # ---------------------------------------------------------------------------
 _user_phones: dict[str, str] = {}
 _pending_phone: set[str] = set()
+
+
+@dataclass
+class _PendingReceipt:
+    """Archivo descargado a la espera de que el usuario provea el ticket ID."""
+
+    file_path: str
+    is_pdf: bool
+
+
+_pending_receipt: dict[str, _PendingReceipt] = {}
 
 # Stub WhatsApp client (not used in Telegram, but AgentDeps requires it)
 _noop_whatsapp = WhatsAppManager()
@@ -151,6 +181,241 @@ async def _maybe_compress_history(chat_id: str, history_len: int) -> None:
         await notify_error(exc, context=f"_maybe_compress_history | chat_id={chat_id}")
 
 
+async def _complete_payment(
+    chat_id: str,
+    message: Message,
+    file_path: str,
+    is_pdf: bool,
+    ticket_id: str,
+) -> None:
+    """Ejecuta OCR sobre el archivo, valida la titularidad del ticket, registra el pago y notifica al usuario."""
+    try:
+        if is_pdf:
+            receipt = await extract_payment_receipt_from_pdf(file_path)
+        else:
+            receipt = await extract_payment_receipt(file_path)
+    except Exception as exc:
+        logger.error(
+            "[ocr] OCR failed for telegram_id=%s file=%s: %s", chat_id, file_path, exc
+        )
+        await message.reply_text(
+            "The receipt could not be processed. Please try again.",
+            do_quote=True,
+        )
+        return
+
+    logger.info(
+        "[ocr] Extracted receipt data — "
+        "amount=%s | date=%s | reference=%s | account=%s | "
+        "recipient_name=%s | payment_method=%s | branch=%s | concept=%s",
+        receipt.amount,
+        receipt.date,
+        receipt.reference,
+        receipt.account,
+        receipt.recipient_name,
+        receipt.payment_method,
+        receipt.branch,
+        receipt.concept,
+    )
+
+    amount = parse_amount(receipt.amount)
+    if amount is None:
+        logger.error(
+            "[receipt] Could not parse amount from receipt for telegram_id=%s amount_raw=%s",
+            chat_id,
+            receipt.amount,
+        )
+        await message.reply_text(
+            "The receipt amount could not be determined. "
+            "Please check the file and try again.",
+            do_quote=True,
+        )
+        return
+
+    assert erp_client is not None, "ERP client not initialized"
+    user_phone: str = _user_phones.get(chat_id, "")
+    try:
+        await validate_ticket_ownership(
+            erp_client=erp_client,
+            user_phone=user_phone,
+            ticket_id=ticket_id,
+        )
+    except ValueError as exc:
+        logger.warning(
+            "[receipt] Ticket validation failed for telegram_id=%s ticket=%s: %s",
+            chat_id,
+            ticket_id,
+            exc,
+        )
+        await message.reply_text(f"⚠️ {exc}", do_quote=True)
+        return
+
+    ocr_payload = receipt.model_dump(exclude_none=True)
+    try:
+        result = await register_deposit_payment(
+            erp_client=erp_client,
+            ticket_id=ticket_id,
+            amount=amount,
+            ocr_payload=ocr_payload,
+            receipt_file_path=file_path,
+        )
+    except ValueError as exc:
+        user_msg = erp_validation_user_message(exc)
+        if user_msg:
+            logger.warning(
+                "[receipt] ERP validation error for telegram_id=%s ticket=%s: %s",
+                chat_id,
+                ticket_id,
+                exc,
+            )
+            await message.reply_text(f"⚠️ {user_msg}", do_quote=True)
+            return
+        raise
+
+    logger.info(
+        "[receipt] Payment registered — deposit_id=%s ticket_id=%s amount_paid=%.2f "
+        "amount_remaining=%.2f is_complete=%s",
+        result.deposit_id,
+        result.ticket_id,
+        result.amount_paid,
+        result.amount_remaining,
+        result.is_complete,
+    )
+    if result.is_complete:
+        reply = (
+            f"✅ Payment registered successfully.\n"
+            f"Deposit: {result.deposit_id}\n"
+            f"Amount paid: {result.amount_paid}\n"
+            f"Status: Payment completed."
+        )
+    else:
+        reply = (
+            f"✅ Payment registered successfully.\n"
+            f"Deposit: {result.deposit_id}\n"
+            f"Amount paid: {result.amount_paid}\n"
+            f"Amount remaining: {result.amount_remaining}"
+        )
+    await message.reply_text(reply, do_quote=True)
+    if result.is_complete:
+        await _fetch_and_send_qr(chat_id=chat_id, message=message, ticket_id=ticket_id)
+
+
+async def _fetch_and_send_qr(chat_id: str, message: Message, ticket_id: str) -> None:
+    """Obtiene el QR de check-in del ERP y lo envía al usuario por Telegram."""
+    assert erp_client is not None, "ERP client not initialized"
+
+    try:
+        qr_data = await fetch_reservation_qr(erp_client=erp_client, ticket_id=ticket_id)
+        qr_image_url = build_qr_image_url(qr_data.qr_image_url)
+        caption = build_qr_caption(ticket_id=qr_data.ticket_id, token=qr_data.token)
+        await message.reply_photo(photo=qr_image_url, caption=caption, do_quote=True)
+        logger.info(
+            "[qr] QR sent to Telegram chat_id=%s ticket_id=%s qr_token_id=%s",
+            chat_id,
+            qr_data.ticket_id,
+            qr_data.qr_token_id,
+        )
+    except (
+        httpx.HTTPError,
+        TelegramError,
+        ValidationError,
+        ValueError,
+    ) as exc:
+        logger.error(
+            "[qr] Failed to fetch/send QR for telegram_id=%s ticket_id=%s: %s",
+            chat_id,
+            ticket_id,
+            exc,
+            exc_info=True,
+        )
+        await notify_error(
+            exc,
+            context=f"telegram_bot._fetch_and_send_qr | chat_id={chat_id} | ticket={ticket_id}",
+        )
+        await message.reply_text(
+            "Your payment was completed, but I couldn't send your check-in QR right now. "
+            "Please contact a human agent so they can share it with you.",
+            do_quote=True,
+        )
+
+
+async def _handle_pending_survey_response(
+    chat_id: str,
+    incoming_msg: str,
+    message: Message,
+) -> bool:
+    """Procesa la próxima respuesta si el chat tiene una encuesta pendiente."""
+    pending_survey = get_pending_survey(chat_id)
+    if pending_survey is None:
+        return False
+
+    feedback = extract_survey_feedback(incoming_msg)
+    if feedback is None:
+        logger.info(
+            "[survey] Message for telegram_id=%s did not look like survey feedback; releasing to main agent",
+            chat_id,
+        )
+        clear_pending_survey(chat_id)
+        return False
+
+    await message_handler.save_user_msg(chat_id, incoming_msg)
+
+    payload: dict[str, Any] = {
+        "ticket_id": pending_survey.ticket_id,
+        "rating": feedback.rating,
+    }
+    if feedback.comment:
+        payload["comment"] = feedback.comment
+
+    assert erp_client is not None, "ERP client not initialized"
+    try:
+        response = await erp_client.post(
+            f"{ERP_BASE_PATH}.survey_controller.submit_survey_response",
+            json=payload,
+            timeout=ERP_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        data = extract_erp_data(response.json())
+        result = SurveyResult.model_validate(data)
+    except Exception as exc:
+        clear_pending_survey(chat_id)
+        logger.error(
+            "[survey] Failed to submit survey for telegram_id=%s ticket=%s: %s",
+            chat_id,
+            pending_survey.ticket_id,
+            exc,
+            exc_info=True,
+        )
+        await notify_error(
+            exc,
+            context=(
+                f"telegram_bot._handle_pending_survey_response | chat_id={chat_id} | ticket={pending_survey.ticket_id}"
+            ),
+        )
+        error_message = (
+            "Thanks for your feedback. We had a problem saving it in the system, "
+            "but we've already notified the team to review it."
+        )
+        await message_handler.save_assistant_msg(chat_id, error_message, [])
+        await message.reply_text(error_message, do_quote=True)
+        return True
+
+    clear_pending_survey(chat_id)
+    thanks_message = (
+        f"Thanks for your feedback. We recorded your rating of {result.rating}/5"
+        f" for ticket {result.ticket_id}."
+    )
+    await message_handler.save_assistant_msg(chat_id, thanks_message, [])
+    await message.reply_text(thanks_message, do_quote=True)
+    logger.info(
+        "[survey] Survey stored for telegram_id=%s ticket=%s rating=%s",
+        chat_id,
+        result.ticket_id,
+        result.rating,
+    )
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Handlers
 # ---------------------------------------------------------------------------
@@ -166,14 +431,16 @@ async def _handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if chat_id not in _user_phones:
         _pending_phone.add(chat_id)
         await update.message.reply_text(
-            f"¡Hola{', ' + user.first_name if user else ''}! 🧀\n"
-            "Soy el asistente de Ruta del Queso.\n\n"
-            "Antes de comenzar necesito tu número de teléfono (con código de país, ej: +59899000000):"
+            f"Hello{', ' + user.first_name if user else ''}! 🧀\n"
+            "I'm the Ruta del Queso assistant.\n\n"
+            "Before we begin, I need your phone number (including country code, for example: +59899000000):",
+            do_quote=True,
         )
     else:
         await update.message.reply_text(
-            f"¡Hola{', ' + user.first_name if user else ''}! 🧀\n"
-            "Soy el asistente de Ruta del Queso. ¿En qué te puedo ayudar hoy?"
+            f"Hello{', ' + user.first_name if user else ''}! 🧀\n"
+            "I'm the Ruta del Queso assistant. How can I help you today?",
+            do_quote=True,
         )
 
 
@@ -186,7 +453,8 @@ async def _handle_change_phone(
     chat_id = str(update.effective_chat.id)
     _pending_phone.add(chat_id)
     await update.message.reply_text(
-        "Por favor ingresa tu nuevo número de teléfono (con código de país, ej: +59899000000):"
+        "Please enter your new phone number (including country code, for example: +59899000000):",
+        do_quote=True,
     )
     logger.info("'/change_phone' requested by telegram_id=%s", chat_id)
 
@@ -197,12 +465,15 @@ async def _handle_restart(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     chat_id = str(update.effective_chat.id)
     await services.reset_chat(chat_id)
-    await update.message.reply_text("Chat reiniciado. ¿En qué te puedo ayudar?")
+    await update.message.reply_text(
+        "Chat restarted. How can I help you?", do_quote=True
+    )
     logger.info("'/restart' requested by telegram_id=%s", chat_id)
 
 
 async def _handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Descarga la imagen recibida, ejecuta OCR, registra el pago en el ERP y notifica al usuario."""
+    """Descarga la imagen recibida. Si el caption contiene el ticket, ejecuta OCR y registra el pago.
+    En caso contrario guarda la ruta del archivo y espera el ticket en el próximo mensaje."""
     if not update.message or not update.message.photo or not update.effective_chat:
         return
 
@@ -234,116 +505,36 @@ async def _handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             else:
                 logger.debug("[image] Caption present but no ticket_id: %r", caption)
 
+        if not ticket_id:
+            # Store file path and wait for ticket in the next message
+            _pending_receipt[chat_id] = _PendingReceipt(
+                file_path=str(file_path), is_pdf=False
+            )
+            logger.info(
+                "[receipt] Stored pending image for telegram_id=%s, waiting for ticket_id",
+                chat_id,
+            )
+            await update.message.reply_text(
+                "I received your payment receipt. 🧾\n"
+                "Please send me the ticket number (for example: TKT-2026-03-00018) so I can register the payment:",
+                do_quote=True,
+            )
+            return
+
+        # Ticket in caption — run OCR now and complete payment
         typing_task = asyncio.create_task(
             _typing_loop(context.bot, update.effective_chat.id)
         )
         try:
-            receipt = await extract_payment_receipt(str(file_path))
+            await _complete_payment(
+                chat_id=chat_id,
+                message=update.message,
+                file_path=str(file_path),
+                is_pdf=False,
+                ticket_id=ticket_id,
+            )
         finally:
             typing_task.cancel()
-
-        # Log all extracted OCR fields
-        logger.info(
-            "[ocr] Extracted receipt data — "
-            "amount=%s | date=%s | reference=%s | account=%s | "
-            "recipient_name=%s | payment_method=%s | branch=%s | concept=%s",
-            receipt.amount,
-            receipt.date,
-            receipt.reference,
-            receipt.account,
-            receipt.recipient_name,
-            receipt.payment_method,
-            receipt.branch,
-            receipt.concept,
-        )
-
-        # Validate amount
-        amount = parse_amount(receipt.amount)
-        if amount is None:
-            logger.error(
-                "[receipt] Could not parse amount from receipt for telegram_id=%s amount_raw=%s",
-                chat_id,
-                receipt.amount,
-            )
-            await update.message.reply_text(
-                "No se pudo determinar el monto del comprobante. "
-                "Por favor verifica la imagen e inténtalo de nuevo."
-            )
-            return
-
-        if not ticket_id:
-            logger.warning(
-                "[receipt] No ticket_id in caption for telegram_id=%s", chat_id
-            )
-            await update.message.reply_text(
-                "Para registrar tu pago necesito el número de ticket (ej: TKT-2026-03-00018). "
-                "Por favor envía la imagen con el número de ticket como descripción."
-            )
-            return
-
-        assert erp_client is not None, "ERP client not initialized"
-        user_phone: str = _user_phones.get(chat_id, "")
-        try:
-            await validate_ticket_ownership(
-                erp_client=erp_client,
-                user_phone=user_phone,
-                ticket_id=ticket_id,
-            )
-        except ValueError as exc:
-            logger.warning(
-                "[receipt] Ticket validation failed for telegram_id=%s ticket=%s: %s",
-                chat_id,
-                ticket_id,
-                exc,
-            )
-            await update.message.reply_text(f"⚠️ {exc}")
-            return
-
-        ocr_payload = receipt.model_dump(exclude_none=True)
-        try:
-            result = await register_deposit_payment(
-                erp_client=erp_client,
-                ticket_id=ticket_id,
-                amount=amount,
-                ocr_payload=ocr_payload,
-            )
-        except ValueError as exc:
-            user_msg = erp_validation_user_message(exc)
-            if user_msg:
-                logger.warning(
-                    "[receipt] ERP validation error for telegram_id=%s ticket=%s: %s",
-                    chat_id,
-                    ticket_id,
-                    exc,
-                )
-                await update.message.reply_text(f"⚠️ {user_msg}")
-                return
-            raise
-
-        logger.info(
-            "[receipt] Payment registered — deposit_id=%s ticket_id=%s amount_paid=%.2f "
-            "amount_remaining=%.2f is_complete=%s",
-            result.deposit_id,
-            result.ticket_id,
-            result.amount_paid,
-            result.amount_remaining,
-            result.is_complete,
-        )
-        if result.is_complete:
-            reply = (
-                f"✅ Pago registrado exitosamente.\n"
-                f"Depósito: {result.deposit_id}\n"
-                f"Monto pagado: {result.amount_paid}\n"
-                f"Estado: Pago completado."
-            )
-        else:
-            reply = (
-                f"✅ Pago registrado exitosamente.\n"
-                f"Depósito: {result.deposit_id}\n"
-                f"Monto pagado: {result.amount_paid}\n"
-                f"Monto restante: {result.amount_remaining}"
-            )
-        await update.message.reply_text(reply)
 
     except Exception as exc:
         logger.exception("Error processing image for telegram_id=%s: %s", chat_id, exc)
@@ -352,12 +543,14 @@ async def _handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             context=f"telegram_bot._handle_image | chat_id={chat_id}",
         )
         await update.message.reply_text(
-            "Ocurrió un error al registrar el pago. Por favor inténtalo de nuevo."
+            "An error occurred while registering the payment. Please try again.",
+            do_quote=True,
         )
 
 
 async def _handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Descarga el PDF recibido, ejecuta OCR, registra el pago en el ERP y notifica al usuario."""
+    """Descarga el PDF recibido. Si el caption contiene el ticket, ejecuta OCR y registra el pago.
+    En caso contrario guarda la ruta del archivo y espera el ticket en el próximo mensaje."""
     if not update.message or not update.message.document or not update.effective_chat:
         return
 
@@ -384,116 +577,36 @@ async def _handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             else:
                 logger.debug("[pdf] Caption present but no ticket_id: %r", caption)
 
+        if not ticket_id:
+            # Store file path and wait for ticket in the next message
+            _pending_receipt[chat_id] = _PendingReceipt(
+                file_path=str(file_path), is_pdf=True
+            )
+            logger.info(
+                "[receipt] Stored pending PDF for telegram_id=%s, waiting for ticket_id",
+                chat_id,
+            )
+            await update.message.reply_text(
+                "I received your payment receipt. 🧾\n"
+                "Please send me the ticket number (for example: TKT-2026-03-00018) so I can register the payment:",
+                do_quote=True,
+            )
+            return
+
+        # Ticket in caption — run OCR now and complete payment
         typing_task = asyncio.create_task(
             _typing_loop(context.bot, update.effective_chat.id)
         )
         try:
-            receipt = await extract_payment_receipt_from_pdf(str(file_path))
+            await _complete_payment(
+                chat_id=chat_id,
+                message=update.message,
+                file_path=str(file_path),
+                is_pdf=True,
+                ticket_id=ticket_id,
+            )
         finally:
             typing_task.cancel()
-
-        # Log all extracted OCR fields
-        logger.info(
-            "[ocr] Extracted receipt data — "
-            "amount=%s | date=%s | reference=%s | account=%s | "
-            "recipient_name=%s | payment_method=%s | branch=%s | concept=%s",
-            receipt.amount,
-            receipt.date,
-            receipt.reference,
-            receipt.account,
-            receipt.recipient_name,
-            receipt.payment_method,
-            receipt.branch,
-            receipt.concept,
-        )
-
-        # Validate amount
-        amount = parse_amount(receipt.amount)
-        if amount is None:
-            logger.error(
-                "[receipt] Could not parse amount from PDF for telegram_id=%s amount_raw=%s",
-                chat_id,
-                receipt.amount,
-            )
-            await update.message.reply_text(
-                "No se pudo determinar el monto del comprobante. "
-                "Por favor verifica el PDF e inténtalo de nuevo."
-            )
-            return
-
-        if not ticket_id:
-            logger.warning(
-                "[receipt] No ticket_id in caption for telegram_id=%s", chat_id
-            )
-            await update.message.reply_text(
-                "Para registrar tu pago necesito el número de ticket (ej: TKT-2026-03-00018). "
-                "Por favor envía el PDF con el número de ticket como descripción."
-            )
-            return
-
-        assert erp_client is not None, "ERP client not initialized"
-        user_phone_pdf: str = _user_phones.get(chat_id, "")
-        try:
-            await validate_ticket_ownership(
-                erp_client=erp_client,
-                user_phone=user_phone_pdf,
-                ticket_id=ticket_id,
-            )
-        except ValueError as exc:
-            logger.warning(
-                "[receipt] Ticket validation failed for telegram_id=%s ticket=%s: %s",
-                chat_id,
-                ticket_id,
-                exc,
-            )
-            await update.message.reply_text(f"⚠️ {exc}")
-            return
-
-        ocr_payload = receipt.model_dump(exclude_none=True)
-        try:
-            result = await register_deposit_payment(
-                erp_client=erp_client,
-                ticket_id=ticket_id,
-                amount=amount,
-                ocr_payload=ocr_payload,
-            )
-        except ValueError as exc:
-            user_msg = erp_validation_user_message(exc)
-            if user_msg:
-                logger.warning(
-                    "[receipt] ERP validation error for telegram_id=%s ticket=%s: %s",
-                    chat_id,
-                    ticket_id,
-                    exc,
-                )
-                await update.message.reply_text(f"⚠️ {user_msg}")
-                return
-            raise
-
-        logger.info(
-            "[receipt] Payment registered — deposit_id=%s ticket_id=%s amount_paid=%.2f "
-            "amount_remaining=%.2f is_complete=%s",
-            result.deposit_id,
-            result.ticket_id,
-            result.amount_paid,
-            result.amount_remaining,
-            result.is_complete,
-        )
-        if result.is_complete:
-            reply = (
-                f"✅ Pago registrado exitosamente.\n"
-                f"Depósito: {result.deposit_id}\n"
-                f"Monto pagado: {result.amount_paid}\n"
-                f"Estado: Pago completado."
-            )
-        else:
-            reply = (
-                f"✅ Pago registrado exitosamente.\n"
-                f"Depósito: {result.deposit_id}\n"
-                f"Monto pagado: {result.amount_paid}\n"
-                f"Monto restante: {result.amount_remaining}"
-            )
-        await update.message.reply_text(reply)
 
     except Exception as exc:
         logger.exception("Error processing PDF for telegram_id=%s: %s", chat_id, exc)
@@ -502,7 +615,8 @@ async def _handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             context=f"telegram_bot._handle_document | chat_id={chat_id}",
         )
         await update.message.reply_text(
-            "Ocurrió un error al registrar el pago. Por favor inténtalo de nuevo."
+            "An error occurred while registering the payment. Please try again.",
+            do_quote=True,
         )
 
 
@@ -528,7 +642,8 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             _pending_phone.discard(chat_id)
             logger.info("Phone registered for telegram_id=%s: %s", chat_id, phone)
             await update.message.reply_text(
-                f"¡Perfecto! Tu número {phone} fue registrado. ¿En qué te puedo ayudar hoy? 🧀"
+                f"Perfect! Your number {phone} has been registered. How can I help you today? 🧀",
+                do_quote=True,
             )
             return
 
@@ -536,9 +651,60 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             # First interaction — ask for phone before anything else
             _pending_phone.add(chat_id)
             await update.message.reply_text(
-                "Antes de continuar necesito tu número de teléfono "
-                "(con código de país, ej: +59899000000):"
+                "Before we continue, I need your phone number "
+                "(including country code, for example: +59899000000):",
+                do_quote=True,
             )
+            return
+
+        if await _handle_pending_survey_response(
+            chat_id=chat_id,
+            incoming_msg=incoming_msg,
+            message=update.message,
+        ):
+            return
+
+        # ------------------------------------------------------------------
+        # Pending payment receipt — waiting for ticket ID
+        # ------------------------------------------------------------------
+        if chat_id in _pending_receipt:
+            match = _TICKET_ID_RE.search(incoming_msg)
+            if match:
+                ticket_id_pending = match.group().upper()
+                logger.info(
+                    "[receipt] Received ticket_id=%s for pending receipt of telegram_id=%s",
+                    ticket_id_pending,
+                    chat_id,
+                )
+                pending = _pending_receipt.pop(chat_id)
+                typing_task = asyncio.create_task(
+                    _typing_loop(context.bot, chat_id_int)
+                )
+                try:
+                    await _complete_payment(
+                        chat_id=chat_id,
+                        message=update.message,
+                        file_path=pending.file_path,
+                        is_pdf=pending.is_pdf,
+                        ticket_id=ticket_id_pending,
+                    )
+                finally:
+                    typing_task.cancel()
+            else:
+                # Allow the user to cancel and return to normal conversation
+                if incoming_msg.strip().lower() in {"/cancelar", "/cancel", "/restart"}:
+                    _pending_receipt.pop(chat_id, None)
+                    await update.message.reply_text(
+                        "Payment registration cancelled. What else can I help you with?",
+                        do_quote=True,
+                    )
+                else:
+                    await update.message.reply_text(
+                        "I couldn't find a ticket number in your message. "
+                        "Please send the ticket number (for example: TKT-2026-03-00018) "
+                        "or type /cancelar to cancel the payment registration:",
+                        do_quote=True,
+                    )
             return
 
         logger.info("=" * 80)
@@ -634,8 +800,8 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     except Exception as explainer_exc:
                         logger.error("Error agent also failed: %s", explainer_exc)
                         ai_response = (
-                            "Ocurrió un error al procesar tu mensaje. "
-                            "Por favor inténtalo de nuevo o escribe /restart."
+                            "An error occurred while processing your message. "
+                            "Please try again or type /restart."
                         )
                     tools_used = []
             except Exception as agent_exc:
@@ -655,8 +821,8 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 except Exception as explainer_exc:
                     logger.error("Error agent also failed: %s", explainer_exc)
                     ai_response = (
-                        "Ocurrió un error al procesar tu mensaje. "
-                        "Por favor inténtalo de nuevo o escribe /restart."
+                        "An error occurred while processing your message. "
+                        "Please try again or type /restart."
                     )
                 tools_used = []
 
@@ -664,7 +830,7 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             logger.debug("Tools used: %s", tools_used)
 
             await message_handler.save_assistant_msg(chat_id, ai_response, tools_used)
-            await update.message.reply_text(ai_response)
+            await update.message.reply_text(ai_response, do_quote=True)
             asyncio.create_task(_maybe_compress_history(chat_id, len(history)))
             assert erp_client is not None
             asyncio.create_task(
@@ -690,8 +856,9 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             context=f"telegram_bot._handle_message | chat_id={chat_id} | msg={incoming_msg[:80]}",
         )
         await update.message.reply_text(
-            "Ocurrió un error al procesar tu mensaje. "
-            "Por favor inténtalo de nuevo o escribe /restart para reiniciar el chat."
+            "An error occurred while processing your message. "
+            "Please try again or type /restart to restart the chat.",
+            do_quote=True,
         )
 
 
@@ -745,6 +912,10 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("start", _handle_start))
     app.add_handler(CommandHandler("restart", _handle_restart))
     app.add_handler(CommandHandler("change_phone", _handle_change_phone))
+    app.add_handler(CommandHandler("get_phone", cmd_get_phone))
+    app.add_handler(
+        CommandHandler("test_dev_notifications", cmd_test_dev_notifications)
+    )
 
     # Direct tool commands — bypass AI agent
     app.add_handler(CommandHandler("list_experiences", cmd_list_experiences))

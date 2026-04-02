@@ -11,9 +11,11 @@ Controllers covered:
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import httpx
 import pytest
-from pydantic_ai import RunContext
+from pydantic_ai import ModelRetry, RunContext
 
 from chatbot.ai_agent.dependencies import AgentDeps
 from chatbot.ai_agent.instructions import resolve_or_create_contact
@@ -196,6 +198,27 @@ async def test_update_contact_requires_contact_id(ctx: RunContext[AgentDeps]) ->
 
     with pytest.raises(ValueError, match="contact_id"):
         await update_contact(ctx, name="Fail")
+
+
+# uv run pytest -s chatbot/ai_agent/tests/test_customer.py::test_update_contact_duplicate_name_raises_model_retry
+@pytest.mark.anyio
+async def test_update_contact_duplicate_name_raises_model_retry(
+    ctx: RunContext[AgentDeps],
+    ctx_factory,
+) -> None:
+    """Si el ERP rechaza un nombre duplicado, la herramienta debe devolver una señal controlada."""
+    duplicate_name = f"Duplicate Name {uuid4().hex[:8]}"
+
+    ctx.deps.user_phone = f"{_BASE_PHONE}13"
+    await resolve_or_create_contact(ctx)
+    first_result = await update_contact(ctx, name=duplicate_name)
+    assert isinstance(first_result, UpdateContactResult)
+
+    second_ctx = ctx_factory(user_phone=f"{_BASE_PHONE}14")
+    await resolve_or_create_contact(second_ctx)
+
+    with pytest.raises(ModelRetry, match="nombre"):
+        await update_contact(second_ctx, name=duplicate_name)
 
 
 # ---------------------------------------------------------------------------

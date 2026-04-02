@@ -6,6 +6,8 @@ data without going through the LLM layer.
 
 Commands registered:
   /list_experiences               [fecha=YYYY-MM-DD]
+  /get_phone
+  /test_dev_notifications
   /get_experience_detail          <id>
   /list_routes
   /get_route_detail               <id>
@@ -22,6 +24,7 @@ Commands registered:
   /get_route_booking_status       <route_booking_id>
   /get_itinerary
   /cancel_reservation             <ticket_id>
+  /activity_completed             <contact_id> <experience_id> <slot_id> <ticket_id>
   /stop_followups
   /start_followups
 """
@@ -31,6 +34,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -66,8 +70,13 @@ from chatbot.ai_agent.tools.notifications import (
     start_lead_followups,
     stop_lead_followups,
 )
+from chatbot.core.config import config
 from chatbot.db.services import services
-from chatbot.messaging.telegram_notifier import notify_error
+from chatbot.messaging.telegram_notifier import (
+    _build_slow_response_message,
+    notify_error,
+    send_message,
+)
 from chatbot.messaging.whatsapp import WhatsAppManager
 
 logger = logging.getLogger(__name__)
@@ -121,6 +130,12 @@ def _build_ctx(chat_id: str) -> RunContext[AgentDeps]:
     return ctx
 
 
+def _get_registered_phone(chat_id: str) -> str | None:
+    """Return the registered phone number for a Telegram chat, if present."""
+    phone = _phones_registry.get(chat_id, "").strip()
+    return phone or None
+
+
 def _to_json_block(data: Any) -> str:
     """Serialize data to a Markdown code block (JSON), truncated if needed."""
     if isinstance(data, BaseModel):
@@ -139,7 +154,7 @@ def _to_json_block(data: Any) -> str:
 
 def _truncate(text: str) -> str:
     if len(text) > _MAX_MSG_LEN:
-        return text[: _MAX_MSG_LEN - 30] + "\n...(respuesta truncada)"
+        return text[: _MAX_MSG_LEN - 30] + "\n...(truncated response)"
     return text
 
 
@@ -151,12 +166,13 @@ def _escape_md(text: str) -> str:
 
 
 def _parse_kwargs(args: list[str]) -> dict[str, str]:
-    """Parse 'key=value' pairs from command args."""
+    """Parse 'key=value' pairs from command args, tolerating bracketed or quoted values."""
     result: dict[str, str] = {}
     for arg in args:
+        arg = arg.strip("[]")  # tolerate users copying the usage hint literally
         if "=" in arg:
             key, _, value = arg.partition("=")
-            result[key.strip().lower()] = value.strip()
+            result[key.strip().lower()] = value.strip().strip("\"'")
     return result
 
 
@@ -171,7 +187,7 @@ async def _resolve(ctx: RunContext[AgentDeps]) -> str | None:
             ctx.deps.telegram_id,
             exc,
         )
-        return f"No se pudo resolver tu contacto en el ERP: {exc}"
+        return f"Your contact could not be resolved in the ERP: {exc}"
 
 
 async def _send_error(
@@ -189,9 +205,87 @@ async def _send_error(
     await notify_error(exc, context=f"telegram_cmd | {context_str}")
     if update.message:
         await update.message.reply_text(
-            f"⚠️ Error al ejecutar el comando: `{exc}`",
+            f"⚠️ Error while running the command: `{exc}`",
             parse_mode="Markdown",
         )
+
+
+# ---------------------------------------------------------------------------
+# /get_phone
+# ---------------------------------------------------------------------------
+
+
+async def cmd_get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/get_phone — shows the phone number registered in the bot memory."""
+    del context
+    if not update.message or not update.effective_chat:
+        return
+
+    chat_id = str(update.effective_chat.id)
+    phone = _get_registered_phone(chat_id)
+    if not phone:
+        await update.message.reply_text(
+            "⚠️ No phone number is registered for this chat. Use `/change_phone` or send your number first.",
+            parse_mode="Markdown",
+        )
+        return
+
+    await update.message.reply_text(
+        f"📱 Registered phone for this chat: `{phone}`",
+        parse_mode="Markdown",
+    )
+
+
+# ---------------------------------------------------------------------------
+# /test_dev_notifications
+# ---------------------------------------------------------------------------
+
+
+async def cmd_test_dev_notifications(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """/test_dev_notifications — sends developer notification test messages."""
+    del context
+    if not update.message or not update.effective_chat:
+        return
+
+    if not config.TELEGRAM_BOT_TOKEN_NOTIFIER or not config.TELEGRAM_DEV_CHAT_ID:
+        await update.message.reply_text(
+            "⚠️ Developer Telegram notifications are not configured.",
+        )
+        return
+
+    chat_id = str(update.effective_chat.id)
+    phone = _get_registered_phone(chat_id) or "not_registered"
+
+    await notify_error(
+        RuntimeError("Telegram dev notification test"),
+        context=f"telegram_cmd_test | chat_id={chat_id} | phone={phone}",
+    )
+
+    slow_response_message = _build_slow_response_message(
+        phone=phone,
+        user_message="Developer notification test triggered from Telegram command.",
+        tools_used=["notify_error", "_build_slow_response_message"],
+        ai_response="This is a synthetic slow-response message generated from /test_dev_notifications.",
+        message_datetime=datetime.now(),
+        history_count=1,
+        response_time=42.0,
+        provider_error="Synthetic provider timeout for notifier validation",
+    )
+    slow_message_sent = await send_message(
+        config.TELEGRAM_DEV_CHAT_ID,
+        slow_response_message,
+        parse_mode="Markdown",
+    )
+
+    lines = [
+        "Developer notification test completed.",
+        "- `notify_error` was triggered.",
+        f"- Slow-response test message sent: `{'yes' if slow_message_sent else 'no'}`.",
+        f"- Developer chat: `{config.TELEGRAM_DEV_CHAT_ID}`.",
+    ]
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 # ---------------------------------------------------------------------------
@@ -221,18 +315,14 @@ async def cmd_list_experiences(
         return
 
     if not experiences:
-        await update.message.reply_text(
-            "No se encontraron experiencias con esos filtros."
-        )
+        await update.message.reply_text("No experiences were found with those filters.")
         return
 
-    lines = [f"🧀 *Experiencias* ({len(experiences)} resultados)\n"]
+    lines = [f"🧀 *Experiences* ({len(experiences)} results)\n"]
     for exp in experiences:
         lines.append(f"• `{exp.experience_id}` — {_escape_md(exp.name)}")
 
-    lines.append(
-        "\nUsa `/get_experience_detail <id>` para ver el detalle de una experiencia."
-    )
+    lines.append("\nUse `/get_experience_detail <id>` to view an experience in detail.")
     await update.message.reply_text(_truncate("\n".join(lines)), parse_mode="Markdown")
 
 
@@ -252,8 +342,8 @@ async def cmd_get_experience_detail(
 
     if not args:
         await update.message.reply_text(
-            "Uso: `/get_experience_detail <id>`\n"
-            "Tip: obtén el id con `/list_experiences`.",
+            "Usage: `/get_experience_detail <id>`\n"
+            "Tip: get the id with `/list_experiences`.",
             parse_mode="Markdown",
         )
         return
@@ -288,14 +378,14 @@ async def cmd_list_routes(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     if not routes:
-        await update.message.reply_text("No se encontraron rutas.")
+        await update.message.reply_text("No routes were found.")
         return
 
-    lines = [f"🗺️ *Rutas* ({len(routes)} resultados)\n"]
+    lines = [f"🗺️ *Routes* ({len(routes)} results)\n"]
     for route in routes:
         lines.append(f"• `{route.route_id}` — {_escape_md(route.name)}")
 
-    lines.append("\nUsa `/get_route_detail <id>` para ver el detalle de una ruta.")
+    lines.append("\nUse `/get_route_detail <id>` to view a route in detail.")
     await update.message.reply_text(_truncate("\n".join(lines)), parse_mode="Markdown")
 
 
@@ -315,7 +405,7 @@ async def cmd_get_route_detail(
 
     if not args:
         await update.message.reply_text(
-            "Uso: `/get_route_detail <id>`\nTip: obtén el id con `/list_routes`.",
+            "Usage: `/get_route_detail <id>`\nTip: get the id with `/list_routes`.",
             parse_mode="Markdown",
         )
         return
@@ -352,14 +442,14 @@ async def cmd_list_establishments(
         return
 
     if not establishments:
-        await update.message.reply_text("No se encontraron establecimientos.")
+        await update.message.reply_text("No establishments were found.")
         return
 
-    lines = [f"🏠 *Establecimientos* ({len(establishments)} resultados)\n"]
+    lines = [f"🏠 *Establishments* ({len(establishments)} results)\n"]
     for est in establishments:
         lines.append(f"• `{est.establishment_id}` — {_escape_md(est.name)}")
 
-    lines.append("\nUsa `/get_establishment_details <id>` para ver el detalle.")
+    lines.append("\nUse `/get_establishment_details <id>` to view the details.")
     await update.message.reply_text(_truncate("\n".join(lines)), parse_mode="Markdown")
 
 
@@ -379,7 +469,7 @@ async def cmd_get_establishment_details(
 
     if not args:
         await update.message.reply_text(
-            "Uso: `/get_establishment_details <id>`\nTip: obtén el id con `/list_establishments`.",
+            "Usage: `/get_establishment_details <id>`\nTip: get the id with `/list_establishments`.",
             parse_mode="Markdown",
         )
         return
@@ -412,8 +502,8 @@ async def cmd_get_availability(
 
     if len(args) < 3:  # noqa: PLR2004
         await update.message.reply_text(
-            "Uso: `/get_availability <experience_id> <date_from> <date_to>`\n"
-            "Ejemplo: `/get_availability exp-001 01-03-2026 31-12-2026`",
+            "Usage: `/get_availability <experience_id> <date_from> <date_to>`\n"
+            "Example: `/get_availability exp-001 01-03-2026 31-12-2026`",
             parse_mode="Markdown",
         )
         return
@@ -454,8 +544,8 @@ async def cmd_get_route_availability(
 
     if len(args) < 3:  # noqa: PLR2004
         await update.message.reply_text(
-            "Uso: `/get_route_availability <route_id> <fecha> <personas>`\n"
-            "Ejemplo: `/get_route_availability ruta-campo 2026-04-15 4`",
+            "Usage: `/get_route_availability <route_id> <date> <party_size>`\n"
+            "Example: `/get_route_availability ruta-campo 2026-04-15 4`",
             parse_mode="Markdown",
         )
         return
@@ -468,7 +558,7 @@ async def cmd_get_route_availability(
         party_size = int(party_str)
     except ValueError:
         await update.message.reply_text(
-            f"❌ `{party_str}` no es un número válido de personas.",
+            f"❌ `{party_str}` is not a valid party size.",
             parse_mode="Markdown",
         )
         return
@@ -510,11 +600,11 @@ async def cmd_resolve_or_create_contact(
 
     deps = ctx.deps
     lines = [
-        "👤 *Tu contacto en el ERP*\n",
+        "👤 *Your ERP contact*\n",
         f"• *ID:* `{deps.contact_id}`",
-        f"• *Nombre:* {deps.user_name or '_no registrado_'}",
-        f"• *Email:* {deps.user_email or '_no registrado_'}",
-        f"• *Teléfono:* {deps.user_phone or '_no registrado_'}",
+        f"• *Name:* {deps.user_name or '_not registered_'}",
+        f"• *Email:* {deps.user_email or '_not registered_'}",
+        f"• *Phone:* {deps.user_phone or '_not registered_'}",
         f"• *Telegram ID:* {deps.telegram_id}",
     ]
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
@@ -536,8 +626,8 @@ async def cmd_update_contact(
 
     if not args:
         await update.message.reply_text(
-            "Uso: `/update_contact [nombre=X] [email=X]`\n"
-            "Ejemplo: `/update_contact nombre=Ana email=ana@test.com`",
+            "Usage: `/update_contact [nombre=X] [email=X]`\n"
+            "Example: `/update_contact nombre=Ana email=ana@test.com`",
             parse_mode="Markdown",
         )
         return
@@ -548,7 +638,7 @@ async def cmd_update_contact(
 
     if not any([name, email]):
         await update.message.reply_text(
-            "❌ No se detectaron campos válidos. Usa `nombre=X` o `email=X`.",
+            "❌ No valid fields were detected. Use `nombre=X` or `email=X`.",
             parse_mode="Markdown",
         )
         return
@@ -612,8 +702,8 @@ async def cmd_get_reservation_status(
 
     if not args:
         await update.message.reply_text(
-            "Uso: `/get_reservation_status <ticket_id>`\n"
-            "Ejemplo: `/get_reservation_status TKT-2026-03-00018`",
+            "Usage: `/get_reservation_status <ticket_id>`\n"
+            "Example: `/get_reservation_status TKT-2026-03-00018`",
             parse_mode="Markdown",
         )
         return
@@ -647,7 +737,7 @@ async def cmd_get_reservations(
     valid_statuses = {"PENDING", "CONFIRMED", "CANCELLED", "EXPIRED"}
     if status and status not in valid_statuses:
         await update.message.reply_text(
-            f"❌ Estado inválido `{status}`. Valores permitidos: {', '.join(sorted(valid_statuses))}",
+            f"❌ Invalid status `{status}`. Allowed values: {', '.join(sorted(valid_statuses))}",
             parse_mode="Markdown",
         )
         return
@@ -655,7 +745,7 @@ async def cmd_get_reservations(
     ctx = _build_ctx(chat_id)
     if not ctx.deps.user_phone:
         await update.message.reply_text(
-            "⚠️ No tienes un teléfono registrado. Usa `/change_phone` o escríbeme tu número primero.",
+            "⚠️ You do not have a registered phone number. Use `/change_phone` or send me your number first.",
             parse_mode="Markdown",
         )
         return
@@ -667,13 +757,13 @@ async def cmd_get_reservations(
         return
 
     if not result.tickets:
-        msg = "No se encontraron reservas"
+        msg = "No reservations were found"
         if status:
-            msg += f" con estado `{status}`"
+            msg += f" with status `{status}`"
         await update.message.reply_text(msg + ".", parse_mode="Markdown")
         return
 
-    lines = [f"🎟️ <b>Reservas</b> ({result.total} en total)\n"]
+    lines = [f"🎟️ <b>Reservations</b> ({result.total} total)\n"]
     for ticket in result.tickets:
         exp = html.escape(ticket.experience_name or ticket.experience or "")
         lines.append(
@@ -681,8 +771,8 @@ async def cmd_get_reservations(
         )
     if result.total and result.total > len(result.tickets):
         lines.append(
-            f"\n<i>Mostrando {len(result.tickets)} de {result.total}. "
-            "Usa /get_reservations con filtro de estado para ver más.</i>"
+            f"\n<i>Showing {len(result.tickets)} of {result.total}. "
+            "Use /get_reservations with a status filter to see more.</i>"
         )
     await update.message.reply_text(_truncate("\n".join(lines)), parse_mode="HTML")
 
@@ -703,8 +793,8 @@ async def cmd_get_route_booking_status(
 
     if not args:
         await update.message.reply_text(
-            "Uso: `/get_route_booking_status <route_booking_id>`\n"
-            "Ejemplo: `/get_route_booking_status RB-2026-03-00013`",
+            "Usage: `/get_route_booking_status <route_booking_id>`\n"
+            "Example: `/get_route_booking_status RB-2026-03-00013`",
             parse_mode="Markdown",
         )
         return
@@ -764,9 +854,9 @@ async def cmd_cancel_reservation(
 
     if not args:
         await update.message.reply_text(
-            "Uso: `/cancel_reservation <ticket_id>`\n"
-            "Ejemplo: `/cancel_reservation TKT-2026-03-00018`\n"
-            "⚠️ Esta acción es irreversible.",
+            "Usage: `/cancel_reservation <ticket_id>`\n"
+            "Example: `/cancel_reservation TKT-2026-03-00018`\n"
+            "⚠️ This action is irreversible.",
             parse_mode="Markdown",
         )
         return
@@ -798,8 +888,8 @@ async def cmd_list_available_experiences(
 
     if len(args) < 2:  # noqa: PLR2004
         await update.message.reply_text(
-            "Uso: `/list_available_experiences <date_from> <date_to>`\n"
-            "Ejemplo: `/list_available_experiences 01-04-2026 30-04-2026`",
+            "Usage: `/list_available_experiences <date_from> <date_to>`\n"
+            "Example: `/list_available_experiences 01-04-2026 30-04-2026`",
             parse_mode="Markdown",
         )
         return
@@ -820,11 +910,11 @@ async def cmd_list_available_experiences(
 
     if not availabilities:
         await update.message.reply_text(
-            f"No hay experiencias disponibles entre {date_from} y {date_to}."
+            f"There are no available experiences between {date_from} and {date_to}."
         )
         return
 
-    lines = [f"📅 *Disponibilidad* ({len(availabilities)} experiencias)\n"]
+    lines = [f"📅 *Availability* ({len(availabilities)} experiences)\n"]
     for av in availabilities:
         slot_count = len(av.slots) if av.slots else 0
         lines.append(
@@ -832,7 +922,7 @@ async def cmd_list_available_experiences(
         )
 
     lines.append(
-        "\nUsa `/get_availability <experience_id> <date_from> <date_to>` para ver los slots en detalle."
+        "\nUse `/get_availability <experience_id> <date_from> <date_to>` to see the slots in detail."
     )
     await update.message.reply_text(_truncate("\n".join(lines)), parse_mode="Markdown")
 

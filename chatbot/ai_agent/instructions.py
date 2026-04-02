@@ -54,14 +54,14 @@ async def resolve_or_create_contact(
         ctx.deps.user_phone = contact.phone
 
     lines: list[str] = [
-        "## Datos del cliente",
+        "## Customer data",
     ]
     if ctx.deps.user_name:
-        lines.append(f"Nombre: {ctx.deps.user_name}.")
+        lines.append(f"Name: {ctx.deps.user_name}.")
     if ctx.deps.user_email:
         lines.append(f"Email: {ctx.deps.user_email}.")
     if ctx.deps.user_phone:
-        lines.append(f"Teléfono: {ctx.deps.user_phone}.")
+        lines.append(f"Phone: {ctx.deps.user_phone}.")
 
     return "\n".join(lines)
 
@@ -75,7 +75,7 @@ async def get_current_itinerary_context(
         ctx: Agent run context with dependencies.
     """
     if not ctx.deps.contact_id:
-        return "No hay información de itinerario disponible (contacto no resuelto)."
+        return "No itinerary information is available yet (contact not resolved)."
 
     try:
         response = await ctx.deps.erp_client.post(
@@ -88,12 +88,12 @@ async def get_current_itinerary_context(
         itinerary = CustomerItinerary.model_validate(data)
 
         if itinerary.total_reservations == 0:
-            return "El cliente no tiene reservaciones ni itinerario registrado."
+            return "The customer has no reservations or itinerary records."
 
-        lines = [f"## Itinerario del cliente (Total: {itinerary.total_reservations})"]
+        lines = [f"## Customer itinerary (Total: {itinerary.total_reservations})"]
         for item in itinerary.itinerary:
             item_title = (
-                f"Ruta: {item.route_name}" if item.type == "route" else "Experiencia"
+                f"Route: {item.route_name}" if item.type == "route" else "Experience"
             )
             lines.append(f"- {item_title} ({len(item.reservations)} paradas/tickets):")
             for res in item.reservations:
@@ -104,4 +104,4 @@ async def get_current_itinerary_context(
         return "\n".join(lines)
     except Exception as e:
         logger.error("Error retrieving itinerary context: %s", e)
-        return "Error al recuperar el itinerario del cliente."
+        return "Error retrieving the customer's itinerary."

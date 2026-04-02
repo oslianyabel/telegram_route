@@ -16,7 +16,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # ---------------------------------------------------------------------------
 # ERP API path constants
@@ -848,9 +848,9 @@ class RouteBookingStatus(BaseModel):
 
 
 class PaymentInstructions(BaseModel):
-    """Payment link and instructions for a ticket deposit.
+    """Payment instructions for a ticket deposit.
 
-    ERP endpoint: deposit_controller.get_payment_link_or_instructions
+    ERP endpoint: deposit_controller.get_deposit_instructions
     ERP response fields: deposit_id, ticket_id, amount_required, amount_paid,
     amount_remaining, due_at, status, payment_link, instructions.
     """
@@ -884,11 +884,47 @@ class DepositPaymentResult(BaseModel):
     new_status: str
     verification_method: str
     is_complete: bool
+    receipt_file_id: str | None = None
+    receipt_file_url: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# 12. QR and Check-in
+# ---------------------------------------------------------------------------
+
+
+class ReservationQrData(BaseModel):
+    """QR token payload returned by qr_controller.get_qr_for_reservation."""
+
+    qr_token_id: str
+    token: str
+    ticket_id: str
+    status: str
+    expires_at: str | None = None
+    qr_image_url: str = Field(min_length=1)
+    is_new: bool = False
 
 
 # ---------------------------------------------------------------------------
 # 14. Survey and Complaints
 # ---------------------------------------------------------------------------
+
+
+class SurveyResult(BaseModel):
+    """Response from survey_controller.submit_survey_response.
+
+    ERP response fields: survey_id, ticket_id, rating, comment,
+    answered_at, is_new, support_case_created, support_case_id.
+    """
+
+    survey_id: str
+    ticket_id: str
+    rating: int
+    comment: str | None = None
+    answered_at: str | None = None
+    is_new: bool = True
+    support_case_created: bool = False
+    support_case_id: str | None = None
 
 
 class ComplaintResult(BaseModel):
@@ -987,11 +1023,16 @@ class PaymentReceipt(BaseModel):
 
 
 class TicketDecision(StrEnum):
-    """Possible outcomes for a pending reservation ticket."""
+    """Ticket statuses that can trigger a customer notification webhook."""
 
-    APPROVED = "approved"
-    REJECTED = "rejected"
-    EXPIRED = "expired"
+    PENDING = "PENDING"
+    APPROVED = "CONFIRMED"
+    CHECKED_IN = "CHECKED_IN"
+    COMPLETED = "COMPLETED"
+    CANCELLED = "CANCELLED"
+    NO_SHOW = "NO_SHOW"
+    REJECTED = "REJECTED"
+    EXPIRED = "EXPIRED"
 
 
 class ERPSendMessageRequest(BaseModel):
@@ -1020,14 +1061,28 @@ class ERPSendTelegramRequest(BaseModel):
 class ERPTicketStatusRequest(BaseModel):
     """Body for /erp/ticket-status endpoint.
 
-    The ERP sends this when a pending reservation is approved, rejected, or
-    has expired, so the bot can notify the customer via WhatsApp.
+    The ERP sends this when a reservation changes to a notifiable status so the
+    bot can validate ownership and notify the customer via WhatsApp.
     """
 
     contact_id: str
     ticket_id: str
     new_status: TicketDecision
     observations: str | None = None
+
+    @field_validator("new_status", mode="before")
+    @classmethod
+    def normalize_new_status(cls, value: Any) -> Any:
+        """Normalize incoming ERP status names such as Checked-In or No-Show."""
+        if not isinstance(value, str):
+            return value
+
+        normalized = value.strip().upper().replace("-", "_").replace(" ", "_")
+        if normalized == "APPROVED":
+            return TicketDecision.APPROVED.value
+        if normalized == "COMPLETADO":
+            return TicketDecision.COMPLETED.value
+        return normalized
 
 
 class ERPSurveyRequest(BaseModel):

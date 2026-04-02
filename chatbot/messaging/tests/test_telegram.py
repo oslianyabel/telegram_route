@@ -3,7 +3,12 @@ from datetime import datetime
 
 import pytest
 
-from chatbot.messaging.telegram_notifier import notify_error, notify_slow_response
+from chatbot.messaging.telegram_notifier import (
+    MAX_MESSAGE_LENGTH,
+    _build_slow_response_message,
+    notify_error,
+    notify_slow_response,
+)
 
 
 @pytest.fixture(scope="session")
@@ -31,3 +36,21 @@ async def test_notify_slow_response() -> None:
         response_time=80.5,
         provider_error="Timeout en get_availability",
     )
+
+
+# uv run pytest -s chatbot/messaging/tests/test_telegram.py -k build_slow_response_message
+def test_build_slow_response_message_truncates_to_telegram_limit() -> None:
+    message = _build_slow_response_message(
+        phone="+123456789",
+        user_message="consulta " * 120,
+        tools_used=["catalog", "availability"],
+        ai_response="respuesta " * 1200,
+        message_datetime=datetime(2026, 4, 2, 10, 30, 0),
+        history_count=12,
+        response_time=91.4,
+        provider_error="Provider timeout",
+    )
+
+    assert len(message) <= MAX_MESSAGE_LENGTH
+    assert "Provider timeout" in message
+    assert "+123456789" in message

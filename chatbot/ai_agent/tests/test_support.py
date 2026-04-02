@@ -4,6 +4,7 @@
 
 Controllers covered:
   - complaint_controller (create_complaint)
+  - survey_controller (submit_survey)
 """
 
 from __future__ import annotations
@@ -17,8 +18,9 @@ from chatbot.ai_agent.models import (
     ComplaintIncidentType,
     ComplaintResult,
     ComplaintType,
+    SurveyResult,
 )
-from chatbot.ai_agent.tools.support import create_complaint
+from chatbot.ai_agent.tools.support import create_complaint, submit_survey
 
 # Teléfono reservado para estos tests
 _TEST_PHONE = "+5351054482"
@@ -76,3 +78,56 @@ async def test_create_complaint_chatbot_issue(ctx: RunContext[AgentDeps]) -> Non
     assert isinstance(result, ComplaintResult)
     assert result.complaint_id
     assert result.incident_type == ComplaintIncidentType.GENERAL
+
+
+# ---------------------------------------------------------------------------
+# submit_survey
+# ---------------------------------------------------------------------------
+
+# Ticket de reserva completada reservado para estos tests
+_TEST_SURVEY_TICKET_ID = "TKT-2026-03-00078"
+
+
+# uv run pytest -s chatbot/ai_agent/tests/test_support.py::test_submit_survey_with_comment
+@pytest.mark.anyio
+async def test_submit_survey_with_comment(ctx: RunContext[AgentDeps]) -> None:
+    """Debe enviar una encuesta de satisfacción con rating y comentario al ERP."""
+    result = await submit_survey(
+        ctx,
+        ticket_id=_TEST_SURVEY_TICKET_ID,
+        rating=5,
+        comment="Great experience!",
+    )
+
+    print(f"\n  survey_id={result.survey_id}")
+    print(f"  ticket_id={result.ticket_id}")
+    print(f"  rating={result.rating}")
+    print(f"  comment={result.comment}")
+    print(f"  support_case_created={result.support_case_created}")
+
+    assert isinstance(result, SurveyResult)
+    assert result.survey_id
+    assert result.ticket_id == _TEST_SURVEY_TICKET_ID
+    assert result.rating == 5
+    assert result.comment == "Great experience!"
+    assert result.support_case_created is False
+
+
+# uv run pytest -s chatbot/ai_agent/tests/test_support.py::test_submit_survey_without_comment
+@pytest.mark.anyio
+async def test_submit_survey_without_comment(ctx: RunContext[AgentDeps]) -> None:
+    """Debe enviar una encuesta de satisfacción sin comentario al ERP."""
+    result = await submit_survey(
+        ctx,
+        ticket_id=_TEST_SURVEY_TICKET_ID,
+        rating=3,
+    )
+
+    print(f"\n  survey_id={result.survey_id}")
+    print(f"  rating={result.rating}")
+    print(f"  is_new={result.is_new}")
+
+    assert isinstance(result, SurveyResult)
+    assert result.survey_id
+    assert result.ticket_id == _TEST_SURVEY_TICKET_ID
+    assert result.rating == 3

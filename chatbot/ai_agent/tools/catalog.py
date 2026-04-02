@@ -105,7 +105,7 @@ async def get_experience_detail(
     logger.info("[get_experience_detail] experience_id=%s", experience_id)
     response = await ctx.deps.erp_client.post(
         f"{ERP_BASE_PATH}.experience_controller.get_experience_detail",
-        json={"experience_id": experience_id},
+        json={"experience_id": experience_id, "include_next_availability": True},
         timeout=ERP_TIMEOUT_SECONDS,
     )
     response.raise_for_status()

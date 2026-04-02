@@ -3,7 +3,7 @@
 """Functional tests for payment instruction tools against the real ERP API.
 
 Controllers covered:
-  - deposit_controller (get_payment_link_or_instructions, record_deposit_payment)
+    - deposit_controller (get_deposit_instructions, record_deposit_payment)
 
 Flujo:
   1. Llama a get_payment_instructions con un ticket_id fijo.
@@ -12,6 +12,8 @@ Flujo:
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 from pydantic_ai import RunContext
@@ -25,6 +27,7 @@ from chatbot.ai_agent.tools.payments import (
 )
 
 _TEST_TICKET_ID = "TKT-2026-03-00053"
+_TEST_RECEIPT_PATH = Path("static/documents/receipt.pdf")
 
 # OCR payload de prueba que simula los datos extraídos de un comprobante real.
 # El campo `amount` se envía como string crudo del OCR; register_deposit_payment
@@ -126,16 +129,21 @@ async def test_register_deposit_payment(
 
     Pasos:
     1. Envía un pago de 40.00 Bs. con el ocr_payload de prueba.
-    2. Valida que el ERP responda con los campos esperados.
+    2. Adjunta un comprobante PDF real en multipart/form-data.
+    3. Valida que el ERP responda con los campos esperados.
         3. Verifica que amount fue convertido a float antes del envío.
     4. Imprime el resultado completo.
     """
+    if not _TEST_RECEIPT_PATH.exists():
+        pytest.skip(f"No existe el comprobante de prueba en {_TEST_RECEIPT_PATH}")
+
     try:
         result: DepositPaymentResult = await register_deposit_payment(
             erp_client=erp_client,
             ticket_id=_TEST_TICKET_ID,
             amount=40.00,
             ocr_payload=dict(_SAMPLE_OCR_PAYLOAD),  # copia para no mutar el original
+            receipt_file_path=str(_TEST_RECEIPT_PATH),
         )
     except ValueError as exc:
         if "PAID deposit" in str(exc):
@@ -162,3 +170,5 @@ async def test_register_deposit_payment(
     print(f"  new_status={result.new_status}")
     print(f"  verification_method={result.verification_method}")
     print(f"  is_complete={result.is_complete}")
+    print(f"  receipt_file_id={result.receipt_file_id}")
+    print(f"  receipt_file_url={result.receipt_file_url}")

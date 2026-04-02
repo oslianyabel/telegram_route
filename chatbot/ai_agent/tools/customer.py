@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import httpx
 from pydantic_ai import ModelRetry, RunContext
 
 from chatbot.ai_agent.dependencies import AgentDeps
@@ -18,6 +19,34 @@ logger = logging.getLogger(__name__)
 ERP_TIMEOUT_SECONDS = 15.0
 
 
+def _extract_erp_error_message(response: httpx.Response) -> str:
+    """Return the ERP validation message when present."""
+    try:
+        body = response.json()
+    except ValueError:
+        return ""
+
+    message = body.get("message")
+    if not isinstance(message, dict):
+        return ""
+
+    error = message.get("error")
+    if not isinstance(error, dict):
+        return ""
+
+    error_message = error.get("message", "")
+    return error_message if isinstance(error_message, str) else ""
+
+
+def _is_duplicate_contact_name_error(error_message: str) -> bool:
+    """Detect the ERP validation error raised for duplicated contact names."""
+    normalized_message = error_message.lower()
+    return (
+        "another cheese contact with name" in normalized_message
+        and "select another name" in normalized_message
+    )
+
+
 # ------------------------------------------------------------------
 # 1. Contact (contact_controller) – tools
 # ------------------------------------------------------------------
@@ -27,39 +56,62 @@ async def update_contact(
     ctx: RunContext[AgentDeps],
     name: str | None = None,
     email: str | None = None,
+    preferred_language: str | None = None,
 ) -> UpdateContactResult | str:
     """Update one or more fields of the current contact.
 
     Pass only the fields you want to change; omit those that already have the correct value.
+    Always detect the language the user is writing in and pass it as ``preferred_language``
+    (e.g. "Spanish", "English", "French", "Portuguese", "German").
 
     Args:
         ctx: Agent run context with dependencies.
         name: New display name (only if it differs from the current one).
         email: New email address (only if it differs from the current one).
+        preferred_language: Language detected from the user's messages (e.g. "Spanish", "English").
     """
     logger.info(
-        "[update_contact] contact_id=%s name=%s email=%s",
+        "[update_contact] contact_id=%s name=%s email=%s preferred_language=%s",
         ctx.deps.contact_id,
         name,
         email,
+        preferred_language,
     )
     if not ctx.deps.contact_id:
         raise ValueError("contact_id is required in AgentDeps to update a contact")
 
-    if not any([name, email]):
-        return "No fields to update. Provide at least one of name or email."
+    if not any([name, email, preferred_language]):
+        return "No fields to update. Provide at least one of name, email or preferred_language."
 
     payload: dict[str, Any] = {"contact_id": ctx.deps.contact_id}
     if name is not None:
         payload["name"] = name
     if email is not None:
         payload["email"] = email
+    if preferred_language is not None:
+        payload["preferred_language"] = preferred_language
 
     response = await ctx.deps.erp_client.post(
         f"{ERP_BASE_PATH}.contact_controller.update_contact",
         json=payload,
         timeout=ERP_TIMEOUT_SECONDS,
     )
+    if not response.is_success:
+        error_message = _extract_erp_error_message(response)
+        if name and _is_duplicate_contact_name_error(error_message):
+            logger.info(
+                "[update_contact] duplicate name rejected for contact_id=%s name=%s",
+                ctx.deps.contact_id,
+                name,
+            )
+            raise ModelRetry(
+                "The ERP does not allow saving a name that is already used by another contact. "
+                "Do not repeat that same name. "
+                "Ask the user for their full name or a more specific name "
+                "and call update_contact again with that new value. "
+                "If you also need to save email or preferred_language, "
+                "do it in a separate call without sending name."
+            )
     response.raise_for_status()
     data: dict[str, Any] = extract_erp_data(response.json())
     result = UpdateContactResult.model_validate(data)
@@ -127,15 +179,7 @@ async def upsert_lead(
     # ERP bug: returns VALIDATION_ERROR when the lead is already CONVERTED.
     # See context/api_issues.md for details.
     if not response.is_success:
-        try:
-            body: dict[str, Any] = response.json()
-        except Exception:
-            body = {}
-        error_msg: str = (
-            body.get("message", {}).get("error", {}).get("message", "")
-            if isinstance(body.get("message"), dict)
-            else ""
-        )
+        error_msg = _extract_erp_error_message(response)
         if "CONVERTED" in error_msg:
             logger.info(
                 "[upsert_lead] Lead already CONVERTED for contact_id=%s — skipping.",

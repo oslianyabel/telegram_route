@@ -31,3 +31,5 @@ class AgentDeps:
     conversation_id: str | None = None
     # Tracks which tools have been called in the current turn (for once-per-turn enforcement)
     called_tools: set[str] = field(default_factory=set)
+    # Cache: True if the customer has at least one COMPLETED reservation (None = not yet checked)
+    has_completed_reservations: bool | None = None
