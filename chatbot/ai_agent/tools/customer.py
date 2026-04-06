@@ -84,12 +84,15 @@ async def update_contact(
         return "No fields to update. Provide at least one of name, email or preferred_language."
 
     payload: dict[str, Any] = {"contact_id": ctx.deps.contact_id}
-    if name is not None:
+    if name is not None and name != ctx.deps.user_name:
         payload["name"] = name
-    if email is not None:
+    if email is not None and email != ctx.deps.user_email:
         payload["email"] = email
     if preferred_language is not None:
         payload["preferred_language"] = preferred_language
+
+    if len(payload) == 1:  # solo contact_id, nada que actualizar
+        return "No fields to update — all provided values already match the current contact data."
 
     response = await ctx.deps.erp_client.post(
         f"{ERP_BASE_PATH}.contact_controller.update_contact",
