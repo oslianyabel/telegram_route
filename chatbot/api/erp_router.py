@@ -20,7 +20,7 @@ from chatbot.ai_agent.models import (
     TicketDecision,
 )
 from chatbot.ai_agent.tools.erp_utils import extract_erp_data
-from chatbot.api.utils import message_handler
+from chatbot.api.utils.message_handler import save_assistant_msg as save_msg
 from chatbot.api.utils.security import get_api_key
 from chatbot.api.utils.survey_feedback import PendingSurvey, set_pending_survey
 from chatbot.api.whatsapp_router import erp_client
@@ -29,6 +29,7 @@ from chatbot.db.services import services
 from chatbot.messaging.telegram_notifier import notify_error
 from chatbot.messaging.telegram_notifier import send_message as send_telegram
 from chatbot.messaging.whatsapp import whatsapp_manager
+from chatbot.reminders.lead_followup import CHANNEL_TELEGRAM, infer_channel
 
 logger = logging.getLogger(__name__)
 router = APIRouter(dependencies=[Depends(get_api_key)])
@@ -473,7 +474,7 @@ async def _dispatch_activity_completed_survey(
                 ticket_id=body.ticket_id,
             ),
         )
-        await message_handler.save_assistant_msg(phone, SURVEY_MESSAGE, [])
+        await save_msg(phone, SURVEY_MESSAGE, [])
         return {"status": "survey_sent", "phone": phone}
 
     if channel == "telegram":
@@ -503,7 +504,7 @@ async def _dispatch_activity_completed_survey(
                 ticket_id=body.ticket_id,
             ),
         )
-        await message_handler.save_assistant_msg(telegram_chat_id, SURVEY_MESSAGE, [])
+        await save_msg(telegram_chat_id, SURVEY_MESSAGE, [])
         return {"status": "survey_sent", "chat_id": telegram_chat_id}
 
     raise HTTPException(
@@ -512,14 +513,25 @@ async def _dispatch_activity_completed_survey(
     )
 
 
-async def _send_payment_instructions(phone: str, ticket_id: str) -> None:
-    """Obtiene las instrucciones de pago del depósito y las envía al cliente por WhatsApp.
+async def _send_payment_instructions(
+    phone: str,
+    ticket_id: str,
+    *,
+    channel: str = "whatsapp",
+) -> None:
+    """Obtiene las instrucciones de pago del depósito y las envía al cliente.
 
     Args:
-        phone: Número de WhatsApp del cliente.
+        phone: Número de teléfono / chat ID del cliente.
         ticket_id: Identificador del ticket cuyo depósito se debe pagar.
+        channel: Canal de envío ("whatsapp" o "telegram").
     """
-    logger.info("[_send_payment_instructions] phone=%s ticket_id=%s", phone, ticket_id)
+    logger.info(
+        "[_send_payment_instructions] phone=%s ticket_id=%s channel=%s",
+        phone,
+        ticket_id,
+        channel,
+    )
     try:
         pay_resp = await erp_client.post(
             f"{ERP_BASE_PATH}.deposit_controller.get_deposit_instructions",
@@ -556,7 +568,12 @@ async def _send_payment_instructions(phone: str, ticket_id: str) -> None:
     )
 
     pay_msg = "\n".join(lines)
-    ok = await whatsapp_manager.send_text(user_number=phone, text=pay_msg)
+
+    if channel == CHANNEL_TELEGRAM:
+        ok = await send_telegram(chat_id=phone, text=pay_msg)
+    else:
+        ok = await whatsapp_manager.send_text(user_number=phone, text=pay_msg)
+
     if not ok:
         logger.error(
             "[_send_payment_instructions] Error enviando instrucciones a %s", phone
@@ -676,7 +693,39 @@ async def notify_ticket_status(body: ERPTicketStatusRequest) -> dict[str, str]:
     ticket = await _get_reservation_status(body.ticket_id)
     _validate_ticket_status_payload(body=body, contact=contact, ticket=ticket)
 
+    # Validar que la fecha del ticket no esté en el pasado (solo para confirmaciones)
+    slot_date: date | None = None
+    if body.new_status == TicketDecision.APPROVED:
+        slot_date_str = ticket.slot.date if ticket.slot else None
+        if slot_date_str:
+            try:
+                slot_date = date.fromisoformat(slot_date_str)
+                if slot_date < date.today():
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail=(
+                            f"El ticket {body.ticket_id} corresponde a la fecha {slot_date_str}, "
+                            "que ya pasó. No se puede confirmar un ticket con fecha pasada."
+                        ),
+                    )
+            except ValueError:
+                logger.warning(
+                    "[ticket-status] Fecha de slot inválida para ticket %s: %s",
+                    body.ticket_id,
+                    slot_date_str,
+                )
+
     phone = contact.phone
+
+    # 2. Inferir canal de comunicación del contacto
+    messages = await services.get_messages(phone)
+    if not messages:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(f"No hay historial de mensajes del usuario {phone} con el bot"),
+        )
+
+    channel = infer_channel(conversation_id=phone, messages=messages)
 
     if body.new_status == TicketDecision.COMPLETED:
         survey_request = _build_activity_completed_request(body.contact_id, ticket)
@@ -684,11 +733,57 @@ async def notify_ticket_status(body: ERPTicketStatusRequest) -> dict[str, str]:
             survey_request,
             contact,
             ticket,
-            channel="whatsapp",
+            channel=channel,
+            telegram_chat_id=phone if channel == CHANNEL_TELEGRAM else None,
         )
 
-    # 2. Construir y enviar el mensaje
+    # 3. Construir el mensaje
     message = _build_ticket_message(body.new_status, body.ticket_id, body.observations)
+
+    if channel == CHANNEL_TELEGRAM:
+        ok = await send_telegram(chat_id=phone, text=message)
+        if not ok:
+            logger.error("[ticket-status] Error enviando Telegram a %s", phone)
+            await notify_error(
+                Exception(
+                    f"Error al enviar notificación de ticket {body.ticket_id} a Telegram {phone}"
+                ),
+                context=f"notify_ticket_status | contact_id={body.contact_id}",
+            )
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Error al enviar el mensaje de Telegram al chat {phone}",
+            )
+
+        logger.info(
+            "[ticket-status] Notificación enviada por Telegram a %s (ticket=%s status=%s)",
+            phone,
+            body.ticket_id,
+            body.new_status,
+        )
+
+        if body.new_status == TicketDecision.APPROVED:
+            await _send_payment_instructions(
+                phone=phone, ticket_id=body.ticket_id, channel=CHANNEL_TELEGRAM
+            )
+            await services.register_confirmed_ticket(
+                ticket_id=body.ticket_id, phone=phone, ticket_date=slot_date
+            )
+
+        return {"status": "ok", "chat_id": phone}
+
+    # Canal WhatsApp: verificar ventana de 24h de META
+    last_msg = await services.get_last_user_message(phone)
+
+    if not _is_within_whatsapp_window(last_msg.created_at):  # type: ignore[attr-defined]
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"La ventana de mensajes gratuitos de 24h de META para {phone} ha expirado. "
+                "El último mensaje del usuario fue hace más de 24 horas."
+            ),
+        )
+
     ok = await whatsapp_manager.send_text(user_number=phone, text=message)
     if not ok:
         logger.error("[ticket-status] Error enviando WhatsApp a %s", phone)
@@ -704,7 +799,7 @@ async def notify_ticket_status(body: ERPTicketStatusRequest) -> dict[str, str]:
         )
 
     logger.info(
-        "[ticket-status] Notificación enviada a %s (ticket=%s status=%s)",
+        "[ticket-status] Notificación enviada por WhatsApp a %s (ticket=%s status=%s)",
         phone,
         body.ticket_id,
         body.new_status,
@@ -714,7 +809,9 @@ async def notify_ticket_status(body: ERPTicketStatusRequest) -> dict[str, str]:
     # so the customer knows how much to pay and where.
     if body.new_status == TicketDecision.APPROVED:
         await _send_payment_instructions(phone=phone, ticket_id=body.ticket_id)
-        await services.register_confirmed_ticket(ticket_id=body.ticket_id, phone=phone)
+        await services.register_confirmed_ticket(
+            ticket_id=body.ticket_id, phone=phone, ticket_date=slot_date
+        )
 
     return {"status": "ok", "phone": phone}
 

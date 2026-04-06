@@ -82,10 +82,40 @@ Two async workers run continuously alongside the API server:
 
 | Worker | File | Scan interval | Purpose |
 |---|---|---|---|
-| Lead Follow-up | `chatbot/reminders/lead_followup.py` | 30 min | Sends a personalised re-engagement message to users who showed interest (lead detected) but did not complete a reservation, starting x number of hours after their last message |
-| Deposit Reminder | `chatbot/reminders/deposit_reminder.py` | 15 min | Sends a payment reminder to users whose ticket was confirmed by the establishment but whose deposit (`amount_remaining > 0`) has not been paid 12 hours after confirmation |
+| Lead Follow-up | `chatbot/reminders/lead_followup.py` | 30 min | Sends a personalised re-engagement message to users who showed interest (lead detected) but did not complete a reservation |
+| Deposit Reminder | `chatbot/reminders/deposit_reminder.py` | 15 min | Sends payment instructions to users whose confirmed ticket still has `amount_remaining > 0` (up to 3 reminders, spaced ≥ 4 h apart) |
 
 Both workers detect the user's channel (WhatsApp or Telegram) from the stored conversation history and deliver the message through the appropriate channel.
+
+### Reminders logic
+
+**Reminders are enabled by default** for all users. Clients can opt out or opt back in at any time by asking the bot; the agent uses the `stop_lead_followups` and `start_lead_followups` tools to manage this preference. The opt-out applies to both reminder types.
+
+#### Lead follow-up reminders
+
+Triggered when `upsert_lead` was called in a conversation but no reservation was made:
+
+1. **First reminder** — sent after the user has been inactive for **≥ 4 hours**.
+2. **Subsequent reminders** — sent only if the user **responded** to the previous reminder, at least **20 hours** have elapsed since that reminder, and the user has again been inactive for **≥ 4 hours**.
+3. **Hard stops** — no more reminders are sent if:
+   - The user did not respond to the last reminder (`no_response_since_last_reminder`).
+   - The user has been inactive for more than **24 hours** since their last message (`inactive_window_expired`).
+   - The user has already received **3 reminders** (`followup_limit_reached`).
+   - The user created a reservation (`reservation_already_created`).
+   - The user opted out (`followup_opted_out`).
+4. **WhatsApp constraint** — messages are only sent within the **24-hour free messaging window** imposed by Meta.
+5. **Performance** — the worker only queries users who have had activity in the last 24 hours, avoiding full table scans.
+
+#### Deposit payment reminders
+
+Triggered when a ticket is confirmed (`APPROVED`) by the establishment but `amount_remaining > 0`:
+
+1. A reminder is sent after the user has been inactive for **≥ 4 hours** since their last message.
+2. Subsequent reminders require **≥ 4 hours** since the last reminder was sent.
+3. Maximum **3 reminders** per ticket.
+4. The ticket must have a **future date** (past-dated tickets are excluded).
+5. Once `amount_remaining = 0` is detected, the ticket is **permanently excluded** (`reminder_count` set to 3).
+6. Reminders are skipped if the user has **opted out**.
 
 ---
 

@@ -55,6 +55,8 @@ Campos requeridos:
 - payment_method: Tipo de pago (Efectivo, Transferencia, Tarjeta, etc.)
 - branch: Subagencia, sucursal o ubicación donde se realizó el pago
 - concept: Concepto o motivo del pago
+- bank_name: Nombre del banco o entidad financiera destinataria (busca el encabezado o logo del banco)
+- currency: Código ISO de la moneda (UYU, USD, EUR, etc.) o símbolo de moneda
 """
 
 # ---------------------------------------------------------------------------
@@ -151,13 +153,9 @@ async def extract_payment_receipt_from_pdf(pdf_path: str) -> PaymentReceipt:
         raise FileNotFoundError(f"PDF file not found: {pdf_path}")
 
     if path.suffix.lower() != ".pdf":
-        raise ValueError(
-            f"Unsupported file extension '{path.suffix}'. Expected .pdf"
-        )
+        raise ValueError(f"Unsupported file extension '{path.suffix}'. Expected .pdf")
 
-    logger.debug(
-        "[extract_payment_receipt_from_pdf] processing PDF: %s", path
-    )
+    logger.debug("[extract_payment_receipt_from_pdf] processing PDF: %s", path)
 
     pdf_bytes = path.read_bytes()
     agent = _get_ocr_agent()

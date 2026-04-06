@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from enum import StrEnum
 from pathlib import Path
 
 import httpx
@@ -19,7 +20,11 @@ from chatbot.ai_agent.models import (
     ContactInfo,
     CustomerItinerary,
     DepositPaymentResult,
+    EstablishmentDetail,
+    ExperienceDetail,
     PaymentInstructions,
+    PaymentReceipt,
+    ReservationStatusDetail,
 )
 from chatbot.ai_agent.tools.erp_utils import extract_erp_data, extract_erp_error
 
@@ -44,6 +49,19 @@ _RECEIPT_CONTENT_TYPES: dict[str, str] = {
     ".png": "image/png",
     ".webp": "image/webp",
 }
+
+
+class PendingDepositStatus(StrEnum):
+    """Result of checking whether a user has a pending deposit payment."""
+
+    HAS_PENDING = "HAS_PENDING"
+    """At least one CONFIRMED ticket with amount_remaining > 0."""
+
+    NO_CONFIRMED_TICKETS = "NO_CONFIRMED_TICKETS"
+    """The user has no tickets in CONFIRMED status."""
+
+    NO_PENDING_DEPOSITS = "NO_PENDING_DEPOSITS"
+    """The user has CONFIRMED tickets but all deposits are already fully paid."""
 
 
 def parse_amount(amount_str: str | None) -> float | None:
@@ -268,6 +286,314 @@ async def validate_ticket_ownership(
     raise ValueError(
         f"Ticket {ticket_id} does not belong to phone number {user_phone}."
     )
+
+
+async def user_has_pending_deposit(
+    erp_client: httpx.AsyncClient,
+    user_phone: str,
+) -> PendingDepositStatus:
+    """Check whether the user has a CONFIRMED ticket with a pending deposit amount.
+
+    Makes the following ERP calls:
+    1. contact_controller.resolve_or_create_contact – resolves the contact_id.
+    2. itinerary_controller.get_customer_itinerary   – lists all reservations.
+    3. deposit_controller.get_deposit_instructions   – called for each CONFIRMED
+       ticket until one with amount_remaining > 0 is found (short-circuit).
+
+    Args:
+        erp_client: Authenticated ERP HTTP client.
+        user_phone: User's phone number used to resolve the contact.
+
+    Returns:
+        PendingDepositStatus indicating the specific result.
+    """
+    logger.info("[user_has_pending_deposit] user_phone=%s", user_phone)
+
+    try:
+        contact_resp = await erp_client.post(
+            f"{ERP_BASE_PATH}.contact_controller.resolve_or_create_contact",
+            json={"phone": user_phone},
+            timeout=ERP_TIMEOUT_SECONDS,
+        )
+        contact_resp.raise_for_status()
+        contact = ContactInfo.model_validate(extract_erp_data(contact_resp.json()))
+    except Exception as exc:
+        logger.warning(
+            "[user_has_pending_deposit] Could not resolve contact for %s: %s",
+            user_phone,
+            exc,
+        )
+        return PendingDepositStatus.NO_CONFIRMED_TICKETS
+
+    try:
+        itinerary_resp = await erp_client.post(
+            f"{ERP_BASE_PATH}.itinerary_controller.get_customer_itinerary",
+            json={"contact_id": contact.contact_id},
+            timeout=ERP_TIMEOUT_SECONDS,
+        )
+        itinerary_resp.raise_for_status()
+        itinerary = CustomerItinerary.model_validate(
+            extract_erp_data(itinerary_resp.json())
+        )
+    except Exception as exc:
+        logger.warning(
+            "[user_has_pending_deposit] Could not get itinerary for %s: %s",
+            user_phone,
+            exc,
+        )
+        return PendingDepositStatus.NO_CONFIRMED_TICKETS
+
+    confirmed_ticket_ids: list[str] = [
+        reservation.reservation_id
+        for item in itinerary.itinerary
+        for reservation in item.reservations
+        if reservation.status.lower() == "confirmed"
+    ]
+
+    if not confirmed_ticket_ids:
+        logger.info(
+            "[user_has_pending_deposit] No CONFIRMED tickets for user=%s", user_phone
+        )
+        return PendingDepositStatus.NO_CONFIRMED_TICKETS
+
+    for ticket_id in confirmed_ticket_ids:
+        try:
+            dep_resp = await erp_client.post(
+                f"{ERP_BASE_PATH}.deposit_controller.get_deposit_instructions",
+                json={"ticket_id": ticket_id},
+                timeout=ERP_TIMEOUT_SECONDS,
+            )
+            if dep_resp.is_error:
+                continue
+            data = extract_erp_data(dep_resp.json())
+            instructions = PaymentInstructions.model_validate(data)
+            if (
+                instructions.amount_remaining is not None
+                and instructions.amount_remaining > 0
+            ):
+                logger.info(
+                    "[user_has_pending_deposit] Found pending deposit for ticket=%s user=%s",
+                    ticket_id,
+                    user_phone,
+                )
+                return PendingDepositStatus.HAS_PENDING
+        except Exception as exc:
+            logger.warning(
+                "[user_has_pending_deposit] Error checking deposit for ticket=%s: %s",
+                ticket_id,
+                exc,
+            )
+            continue
+
+    logger.info(
+        "[user_has_pending_deposit] No pending deposits found for user=%s", user_phone
+    )
+    return PendingDepositStatus.NO_PENDING_DEPOSITS
+
+
+async def validate_ocr_against_bank_account(
+    erp_client: httpx.AsyncClient,
+    ticket_id: str,
+    receipt: PaymentReceipt,
+) -> tuple[bool, str]:
+    """Validate that the OCR receipt data matches the establishment's bank account.
+
+    First checks that bank_name, account and currency were successfully extracted
+    from the receipt — if any is missing the validation fails immediately so the
+    user is asked to resend a clearer image before any ERP calls are made.
+
+    Then follows the chain:
+    1. ticket_controller.get_reservation_status  → experience_id
+    2. experience_controller.get_experience_detail → establishment_id
+    3. establishment_controller.get_establishment_details → bank_account list
+
+    Compares bank_name, account_number and currency (case-insensitive) from the
+    receipt against every entry in the establishment's bank_account list.  A
+    field is skipped in the comparison only when the establishment entry itself
+    has no value for it.  If the bank_account list is empty the validation is
+    skipped and (True, "") is returned so the payment is not blocked.
+
+    Args:
+        erp_client: Authenticated ERP HTTP client.
+        ticket_id: ERP ticket identifier (e.g. TKT-2026-03-00018).
+        receipt: OCR data extracted from the payment receipt.
+
+    Returns:
+        A tuple (passed, reason) where ``passed`` is True when validation
+        succeeds (or is skipped) and ``reason`` describes the problem when
+        ``passed`` is False.
+    """
+    logger.info("[validate_ocr_against_bank_account] ticket_id=%s", ticket_id)
+
+    # --- 0. Ensure mandatory OCR fields were extracted ---
+    missing: list[str] = []
+    if not receipt.bank_name:
+        missing.append("bank name")
+    if not receipt.account:
+        missing.append("account number")
+    if not receipt.currency:
+        missing.append("currency")
+    if missing:
+        reason = (
+            f"The following required fields could not be read from your receipt: "
+            f"{', '.join(missing)}. "
+            f"Please resend a clearer image where those details are visible."
+        )
+        logger.warning(
+            "[validate_ocr_against_bank_account] Missing OCR fields for ticket=%s: %s",
+            ticket_id,
+            missing,
+        )
+        return False, reason
+
+    # --- 1. Get reservation status → experience_id ---
+    try:
+        ticket_resp = await erp_client.post(
+            f"{ERP_BASE_PATH}.ticket_controller.get_reservation_status",
+            json={"reservation_id": ticket_id},
+            timeout=ERP_TIMEOUT_SECONDS,
+        )
+        ticket_resp.raise_for_status()
+        ticket_detail = ReservationStatusDetail.model_validate(
+            extract_erp_data(ticket_resp.json())
+        )
+    except Exception as exc:
+        logger.warning(
+            "[validate_ocr_against_bank_account] Could not get reservation status for ticket=%s: %s",
+            ticket_id,
+            exc,
+        )
+        return True, ""
+
+    experience_id: str | None = (
+        ticket_detail.experience.experience_id if ticket_detail.experience else None
+    )
+    if not experience_id:
+        logger.warning(
+            "[validate_ocr_against_bank_account] No experience_id for ticket=%s — skipping validation",
+            ticket_id,
+        )
+        return True, ""
+
+    # --- 2. Get experience detail → establishment_id ---
+    try:
+        exp_resp = await erp_client.post(
+            f"{ERP_BASE_PATH}.experience_controller.get_experience_detail",
+            json={"experience_id": experience_id},
+            timeout=ERP_TIMEOUT_SECONDS,
+        )
+        exp_resp.raise_for_status()
+        experience = ExperienceDetail.model_validate(extract_erp_data(exp_resp.json()))
+    except Exception as exc:
+        logger.warning(
+            "[validate_ocr_against_bank_account] Could not get experience detail for experience=%s: %s",
+            experience_id,
+            exc,
+        )
+        return True, ""
+
+    establishment_id: str | None = (
+        experience.establishment.id if experience.establishment else None
+    )
+    if not establishment_id:
+        logger.warning(
+            "[validate_ocr_against_bank_account] No establishment_id for experience=%s — skipping validation",
+            experience_id,
+        )
+        return True, ""
+
+    # --- 3. Get establishment details → bank_account list ---
+    try:
+        est_resp = await erp_client.post(
+            f"{ERP_BASE_PATH}.establishment_controller.get_establishment_details",
+            json={"company_id": establishment_id},
+            timeout=ERP_TIMEOUT_SECONDS,
+        )
+        est_resp.raise_for_status()
+        establishment = EstablishmentDetail.model_validate(
+            extract_erp_data(est_resp.json())
+        )
+    except Exception as exc:
+        logger.warning(
+            "[validate_ocr_against_bank_account] Could not get establishment details for %s: %s",
+            establishment_id,
+            exc,
+        )
+        return True, ""
+
+    if not establishment.bank_account:
+        logger.info(
+            "[validate_ocr_against_bank_account] No bank account configured for establishment=%s — skipping validation",
+            establishment_id,
+        )
+        return True, ""
+
+    # --- 4. Compare OCR fields against each bank account entry ---
+    receipt_bank = (receipt.bank_name or "").strip().lower()
+    receipt_account = (receipt.account or "").strip()
+    receipt_currency = (receipt.currency or "").strip().upper()
+
+    complete_entries: int = 0
+
+    for entry in establishment.bank_account:
+        entry_bank = (entry.bank_name or "").strip().lower()
+        entry_account = (entry.account_number or "").strip()
+        entry_iban = (entry.iban or "").strip()
+        entry_currency = (entry.currency or "").strip().upper()
+
+        # Skip entries that are missing any of the required identification fields
+        if not entry_bank or not (entry_account or entry_iban) or not entry_currency:
+            logger.debug(
+                "[validate_ocr_against_bank_account] Skipping incomplete bank_account entry=%r",
+                entry.bank_account_id,
+            )
+            continue
+
+        complete_entries += 1
+        bank_match = receipt_bank in entry_bank or entry_bank in receipt_bank
+        # receipt `account` may contain account_number or IBAN
+        account_match = (
+            not entry_account
+            or receipt_account == entry_account
+            or (entry_iban and receipt_account == entry_iban)
+        )
+        currency_match = not entry_currency or receipt_currency == entry_currency
+
+        if bank_match and account_match and currency_match:
+            logger.info(
+                "[validate_ocr_against_bank_account] Match found — bank=%r currency=%r ticket=%s",
+                entry.bank_name,
+                entry.currency,
+                ticket_id,
+            )
+            return True, ""
+
+    if complete_entries == 0:
+        logger.info(
+            "[validate_ocr_against_bank_account] All bank_account entries are incomplete for establishment=%s — skipping validation",
+            establishment_id,
+        )
+        return True, ""
+
+    # Build a descriptive mismatch message
+    expected_banks = ", ".join(
+        f"{e.bank_name} / {e.account_number or e.iban} ({e.currency})"
+        for e in establishment.bank_account
+        if e.bank_name
+    )
+    reason = (
+        f"The payment receipt details don't match the establishment's bank account. "
+        f"Expected: {expected_banks or 'configured bank account'}. "
+        f"Got: bank={receipt.bank_name or 'unknown'}, "
+        f"account={receipt.account or 'unknown'}, "
+        f"currency={receipt.currency or 'unknown'}."
+    )
+    logger.warning(
+        "[validate_ocr_against_bank_account] Mismatch for ticket=%s — %s",
+        ticket_id,
+        reason,
+    )
+    return False, reason
 
 
 async def get_payment_instructions(

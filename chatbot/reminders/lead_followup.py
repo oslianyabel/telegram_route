@@ -36,7 +36,7 @@ CHANNEL_MARKERS = {
     CHANNEL_WHATSAPP: "CHANNEL: whatsapp",
     CHANNEL_TELEGRAM: "CHANNEL: telegram",
 }
-INITIAL_FOLLOW_UP_DELAY = timedelta(hours=2)
+INITIAL_FOLLOW_UP_DELAY = timedelta(hours=4)
 REPEAT_FOLLOW_UP_DELAY = timedelta(hours=20)
 MAX_INACTIVE_WINDOW = timedelta(hours=24)
 WHATSAPP_FREE_WINDOW = timedelta(hours=24)
@@ -166,7 +166,9 @@ def evaluate_follow_up_eligibility(
             last_reminder_at,
             followup_count,
         )
-    if last_reminder_at is None or last_user_at > last_reminder_at:
+
+    if last_reminder_at is None:
+        # No reminder has been sent yet — send after INITIAL_FOLLOW_UP_DELAY of inactivity
         if inactive_for >= INITIAL_FOLLOW_UP_DELAY:
             return FollowUpDecision(
                 True,
@@ -183,7 +185,29 @@ def evaluate_follow_up_eligibility(
             followup_count,
         )
 
-    if now - last_reminder_at >= REPEAT_FOLLOW_UP_DELAY:
+    # A reminder was already sent.
+    # Spec: only send another one if the client responded after the last reminder.
+    if last_user_at <= last_reminder_at:
+        return FollowUpDecision(
+            False,
+            "no_response_since_last_reminder",
+            last_user_at,
+            last_reminder_at,
+            followup_count,
+        )
+
+    # Client responded. Still need at least REPEAT_FOLLOW_UP_DELAY (20h) since last reminder
+    # and INITIAL_FOLLOW_UP_DELAY (4h) of inactivity before sending the next one.
+    if now - last_reminder_at < REPEAT_FOLLOW_UP_DELAY:
+        return FollowUpDecision(
+            False,
+            "repeat_delay_not_elapsed",
+            last_user_at,
+            last_reminder_at,
+            followup_count,
+        )
+
+    if inactive_for >= INITIAL_FOLLOW_UP_DELAY:
         return FollowUpDecision(
             True,
             "repeat_delay_elapsed",
@@ -194,7 +218,7 @@ def evaluate_follow_up_eligibility(
 
     return FollowUpDecision(
         False,
-        "repeat_delay_not_elapsed",
+        "initial_delay_not_elapsed",
         last_user_at,
         last_reminder_at,
         followup_count,
@@ -440,8 +464,11 @@ async def process_pending_lead_followups(
     db_services: Services,
     erp_client: httpx.AsyncClient,
 ) -> None:
-    users = await db_services.get_all_users()
     now = datetime.now(UTC)
+    # Only consider users active within MAX_INACTIVE_WINDOW; beyond that
+    # evaluate_follow_up_eligibility returns inactive_window_expired anyway.
+    since = now.replace(tzinfo=None) - MAX_INACTIVE_WINDOW
+    users = await db_services.get_users_with_recent_user_message(since)
 
     for user in users:
         conversation_id = str(user.phone)  # type: ignore[attr-defined]

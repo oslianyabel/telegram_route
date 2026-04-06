@@ -19,7 +19,7 @@ from typing import Any
 
 import httpx
 from pydantic import ValidationError
-from pydantic_ai.exceptions import UsageLimitExceeded
+from pydantic_ai.exceptions import ModelHTTPError, UsageLimitExceeded
 from telegram import Message, Update
 from telegram.constants import ChatAction
 from telegram.error import TelegramError
@@ -32,6 +32,7 @@ from telegram.ext import (
 )
 
 from chatbot.ai_agent import get_cheese_agent
+from chatbot.ai_agent.agent import FALLBACK_MODEL
 from chatbot.ai_agent.context import webhook_context_manager
 from chatbot.ai_agent.dependencies import AgentDeps
 from chatbot.ai_agent.error_agent import run_error_agent
@@ -43,9 +44,12 @@ from chatbot.ai_agent.tools.ocr import (
     extract_payment_receipt_from_pdf,
 )
 from chatbot.ai_agent.tools.payments import (
+    PendingDepositStatus,
     erp_validation_user_message,
     parse_amount,
     register_deposit_payment,
+    user_has_pending_deposit,
+    validate_ocr_against_bank_account,
     validate_ticket_ownership,
 )
 from chatbot.api.utils import message_handler, telegram_commands
@@ -129,6 +133,16 @@ _pending_receipt: dict[str, _PendingReceipt] = {}
 # Stub WhatsApp client (not used in Telegram, but AgentDeps requires it)
 _noop_whatsapp = WhatsAppManager()
 
+_PENDING_DEPOSIT_MESSAGES: dict[PendingDepositStatus, str] = {
+    PendingDepositStatus.NO_CONFIRMED_TICKETS: (
+        "You don't have any reservations in CONFIRMED status, so there is no pending payment to register."
+    ),
+    PendingDepositStatus.NO_PENDING_DEPOSITS: (
+        "All your confirmed reservations are already fully paid. "
+        "There is no outstanding deposit to register."
+    ),
+}
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -189,6 +203,24 @@ async def _complete_payment(
     ticket_id: str,
 ) -> None:
     """Ejecuta OCR sobre el archivo, valida la titularidad del ticket, registra el pago y notifica al usuario."""
+    assert erp_client is not None, "ERP client not initialized"
+    user_phone: str = _user_phones.get(chat_id, "")
+
+    deposit_status = await user_has_pending_deposit(
+        erp_client=erp_client, user_phone=user_phone
+    )
+    if deposit_status != PendingDepositStatus.HAS_PENDING:
+        logger.info(
+            "[receipt] User=%s deposit_status=%s — skipping registration",
+            chat_id,
+            deposit_status,
+        )
+        await message.reply_text(
+            _PENDING_DEPOSIT_MESSAGES[deposit_status],
+            do_quote=True,
+        )
+        return
+
     try:
         if is_pdf:
             receipt = await extract_payment_receipt_from_pdf(file_path)
@@ -207,7 +239,8 @@ async def _complete_payment(
     logger.info(
         "[ocr] Extracted receipt data — "
         "amount=%s | date=%s | reference=%s | account=%s | "
-        "recipient_name=%s | payment_method=%s | branch=%s | concept=%s",
+        "recipient_name=%s | payment_method=%s | branch=%s | concept=%s | "
+        "bank_name=%s | currency=%s",
         receipt.amount,
         receipt.date,
         receipt.reference,
@@ -216,6 +249,8 @@ async def _complete_payment(
         receipt.payment_method,
         receipt.branch,
         receipt.concept,
+        receipt.bank_name,
+        receipt.currency,
     )
 
     amount = parse_amount(receipt.amount)
@@ -232,8 +267,6 @@ async def _complete_payment(
         )
         return
 
-    assert erp_client is not None, "ERP client not initialized"
-    user_phone: str = _user_phones.get(chat_id, "")
     try:
         await validate_ticket_ownership(
             erp_client=erp_client,
@@ -251,6 +284,22 @@ async def _complete_payment(
         return
 
     ocr_payload = receipt.model_dump(exclude_none=True)
+
+    ocr_valid, ocr_reason = await validate_ocr_against_bank_account(
+        erp_client=erp_client,
+        ticket_id=ticket_id,
+        receipt=receipt,
+    )
+    if not ocr_valid:
+        logger.warning(
+            "[receipt] OCR bank validation failed for telegram_id=%s ticket=%s: %s",
+            chat_id,
+            ticket_id,
+            ocr_reason,
+        )
+        await message.reply_text(f"⚠️ {ocr_reason}", do_quote=True)
+        return
+
     try:
         result = await register_deposit_payment(
             erp_client=erp_client,
@@ -270,7 +319,41 @@ async def _complete_payment(
             )
             await message.reply_text(f"⚠️ {user_msg}", do_quote=True)
             return
-        raise
+        logger.error(
+            "[receipt] Failed to register payment for telegram_id=%s ticket=%s: %s",
+            chat_id,
+            ticket_id,
+            exc,
+            exc_info=True,
+        )
+        await notify_error(
+            exc,
+            context=f"_complete_payment | chat_id={chat_id} | ticket={ticket_id}",
+        )
+        await message.reply_text(
+            "An error occurred while registering your payment in the system. "
+            "Please try again or escalate your request to a human agent.",
+            do_quote=True,
+        )
+        return
+    except Exception as exc:
+        logger.error(
+            "[receipt] Failed to register payment for telegram_id=%s ticket=%s: %s",
+            chat_id,
+            ticket_id,
+            exc,
+            exc_info=True,
+        )
+        await notify_error(
+            exc,
+            context=f"_complete_payment | chat_id={chat_id} | ticket={ticket_id}",
+        )
+        await message.reply_text(
+            "An error occurred while registering your payment in the system. "
+            "Please try again or escalate your request to a human agent.",
+            do_quote=True,
+        )
+        return
 
     logger.info(
         "[receipt] Payment registered — deposit_id=%s ticket_id=%s amount_paid=%.2f "
@@ -506,6 +589,23 @@ async def _handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 logger.debug("[image] Caption present but no ticket_id: %r", caption)
 
         if not ticket_id:
+            assert erp_client is not None, "ERP client not initialized"
+            user_phone_img: str = _user_phones.get(chat_id, "")
+            deposit_status = await user_has_pending_deposit(
+                erp_client=erp_client, user_phone=user_phone_img
+            )
+            if deposit_status != PendingDepositStatus.HAS_PENDING:
+                logger.info(
+                    "[receipt] User=%s deposit_status=%s — discarding image",
+                    chat_id,
+                    deposit_status,
+                )
+                await update.message.reply_text(
+                    _PENDING_DEPOSIT_MESSAGES[deposit_status],
+                    do_quote=True,
+                )
+                return
+
             # Store file path and wait for ticket in the next message
             _pending_receipt[chat_id] = _PendingReceipt(
                 file_path=str(file_path), is_pdf=False
@@ -578,6 +678,23 @@ async def _handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 logger.debug("[pdf] Caption present but no ticket_id: %r", caption)
 
         if not ticket_id:
+            assert erp_client is not None, "ERP client not initialized"
+            user_phone_doc: str = _user_phones.get(chat_id, "")
+            deposit_status = await user_has_pending_deposit(
+                erp_client=erp_client, user_phone=user_phone_doc
+            )
+            if deposit_status != PendingDepositStatus.HAS_PENDING:
+                logger.info(
+                    "[receipt] User=%s deposit_status=%s — discarding PDF",
+                    chat_id,
+                    deposit_status,
+                )
+                await update.message.reply_text(
+                    _PENDING_DEPOSIT_MESSAGES[deposit_status],
+                    do_quote=True,
+                )
+                return
+
             # Store file path and wait for ticket in the next message
             _pending_receipt[chat_id] = _PendingReceipt(
                 file_path=str(file_path), is_pdf=True
@@ -743,9 +860,25 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             agent = get_cheese_agent()
             history = await services.get_pydantic_ai_history(chat_id, hours=24)
             try:
-                result = await agent.run(
-                    incoming_msg, deps=deps, message_history=history
-                )
+                try:
+                    result = await agent.run(
+                        incoming_msg, deps=deps, message_history=history
+                    )
+                except ModelHTTPError as http_exc:
+                    if http_exc.status_code == 503:
+                        logger.warning(
+                            "[fallback] 503 on primary model for telegram_id=%s — switching to %s",
+                            chat_id,
+                            FALLBACK_MODEL,
+                        )
+                        result = await agent.run(
+                            incoming_msg,
+                            deps=deps,
+                            message_history=history,
+                            model=FALLBACK_MODEL,
+                        )
+                    else:
+                        raise
                 ai_response: str = strip_markdown(result.output)
                 tools_used = _extract_tools_used(result)
             except UsageLimitExceeded as ule:

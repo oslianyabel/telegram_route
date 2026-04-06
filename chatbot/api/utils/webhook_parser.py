@@ -58,6 +58,7 @@ class ParsedMessage:
     ``media_file_path`` are set.
     For image/PDF messages WITHOUT ticket in caption, ``media_file_path`` and ``is_pdf``
     are set so the router can store the path and defer OCR until the ticket arrives.
+    For unsupported document formats (e.g. docx), ``unsupported_format`` is True.
     """
 
     user_number: str
@@ -67,6 +68,7 @@ class ParsedMessage:
     ticket_id: str | None = None
     media_file_path: str | None = None
     is_pdf: bool = False
+    unsupported_format: bool = False
 
 
 async def extract_message_content(webhook_data: dict) -> ParsedMessage | None:
@@ -147,9 +149,13 @@ async def extract_message_content(webhook_data: dict) -> ParsedMessage | None:
             mime_type: str = doc_obj.get("mime_type", "")
             if mime_type != "application/pdf":
                 logger.warning(
-                    f"Skipping document with unsupported mime_type: {mime_type}"
+                    f"Unsupported document mime_type for user={user_number}: {mime_type}"
                 )
-                return None
+                return ParsedMessage(
+                    user_number=user_number,
+                    message_id=message_id,
+                    unsupported_format=True,
+                )
 
             media_id = doc_obj.get("id")
             caption = doc_obj.get("caption")

@@ -12,17 +12,23 @@ from pydantic_ai.tools import ToolDefinition
 from chatbot.ai_agent.dependencies import AgentDeps
 from chatbot.ai_agent.instructions import (
     get_current_itinerary_context,
+    get_pending_deposit_context,
     resolve_or_create_contact,
 )
 from chatbot.ai_agent.models import ERP_BASE_PATH, GoogleModel, ReservationStatus
 from chatbot.ai_agent.tools.booking import (
     cancel_reservation,
+    cancel_route_booking,
     confirm_modification,
+    confirm_route_modification,
     create_pending_reservation,
     create_route_reservation,
+    get_cancellation_impact,
     get_reservation_status,
     get_reservations_by_phone,
     get_route_booking_status,
+    modify_reservation_preview,
+    modify_route_booking_preview,
 )
 from chatbot.ai_agent.tools.catalog import (
     get_availability,
@@ -41,7 +47,10 @@ from chatbot.ai_agent.tools.customer import (
 )
 from chatbot.ai_agent.tools.date_resolver import resolve_relative_date
 from chatbot.ai_agent.tools.erp_utils import extract_erp_data
-from chatbot.ai_agent.tools.notifications import stop_lead_followups
+from chatbot.ai_agent.tools.notifications import (
+    start_lead_followups,
+    stop_lead_followups,
+)
 from chatbot.ai_agent.tools.payments import get_payment_instructions
 from chatbot.ai_agent.tools.support import create_complaint, submit_survey
 
@@ -49,6 +58,7 @@ logger = logging.getLogger(__name__)
 ERP_TIMEOUT_SECONDS = 15.0
 
 PROMPT_FILE: Path = Path("static/prompt.txt")
+FALLBACK_MODEL: str = GoogleModel.Gemini_3_Flash_Preview
 
 
 def _load_system_prompt() -> str:
@@ -125,15 +135,22 @@ AGENT_TOOLS = [
     update_contact,
     upsert_lead,
     stop_lead_followups,
+    start_lead_followups,
     # Reservations
     create_pending_reservation,
     get_reservation_status,
     get_reservations_by_phone,
+    modify_reservation_preview,
     confirm_modification,
     cancel_reservation,
     # Route reservations
     create_route_reservation,
     get_route_booking_status,
+    cancel_route_booking,
+    modify_route_booking_preview,
+    confirm_route_modification,
+    # Pricing & cancellation policy
+    get_cancellation_impact,
     # Payments
     get_payment_instructions,
     # Date resolution sub-agent
@@ -205,6 +222,12 @@ def get_cheese_agent() -> Agent[AgentDeps, str]:
             ctx: RunContext[AgentDeps],
         ) -> str:
             return await get_current_itinerary_context(ctx)
+
+        @_cheese_agent.instructions
+        async def pending_deposit_context_instruction(
+            ctx: RunContext[AgentDeps],
+        ) -> str:
+            return await get_pending_deposit_context(ctx)
 
         @_cheese_agent.system_prompt
         async def list_experiences_prompt(

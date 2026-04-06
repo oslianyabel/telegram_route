@@ -48,7 +48,7 @@ def test_followup_is_sent_after_12h_without_reservation() -> None:
     assert decision.reason == "initial_delay_elapsed"
 
 
-def test_followup_is_not_sent_before_20h_after_previous_reminder() -> None:
+def test_followup_is_not_sent_when_client_did_not_respond_to_last_reminder() -> None:
     now = datetime.now(tz=UTC)
     rows = [
         FakeMessageRow(
@@ -63,7 +63,49 @@ def test_followup_is_not_sent_before_20h_after_previous_reminder() -> None:
     decision = evaluate_follow_up_eligibility(rows, now=now)
 
     assert decision.should_send is False
+    assert decision.reason == "no_response_since_last_reminder"
+
+
+def test_followup_is_not_sent_when_20h_not_elapsed_after_client_response() -> None:
+    # Cliente respondió al reminder pero aún no pasaron 20h desde el último recordatorio
+    now = datetime.now(tz=UTC)
+    rows = [
+        _tool_row(["upsert_lead"], now - timedelta(hours=22)),
+        # Primer recordatorio
+        _tool_row(["lead_followup_reminder"], now - timedelta(hours=18)),
+        # Cliente respondió
+        FakeMessageRow(
+            role="user",
+            message="Usuario - Voy a pensar",
+            created_at=now - timedelta(hours=10),
+        ),
+    ]
+
+    decision = evaluate_follow_up_eligibility(rows, now=now)
+
+    assert decision.should_send is False
     assert decision.reason == "repeat_delay_not_elapsed"
+
+
+def test_followup_is_sent_when_client_responded_and_20h_elapsed() -> None:
+    # Cliente respondió al reminder y ya pasaron 20h desde el último recordatorio
+    now = datetime.now(tz=UTC)
+    rows = [
+        _tool_row(["upsert_lead"], now - timedelta(hours=30)),
+        # Primer recordatorio
+        _tool_row(["lead_followup_reminder"], now - timedelta(hours=25)),
+        # Cliente respondió y volvió a estar inactivo
+        FakeMessageRow(
+            role="user",
+            message="Usuario - Voy a pensarlo",
+            created_at=now - timedelta(hours=10),
+        ),
+    ]
+
+    decision = evaluate_follow_up_eligibility(rows, now=now)
+
+    assert decision.should_send is True
+    assert decision.reason == "repeat_delay_elapsed"
 
 
 def test_followup_is_not_sent_when_reservation_was_already_created() -> None:
@@ -166,4 +208,4 @@ async def test_stop_lead_followups_tool_persists_opt_out() -> None:
     result = await stop_lead_followups(ctx)
 
     assert fake_db.calls == [("59812345678", "FOLLOWUP: opt_out")]
-    assert "mensajes automáticos de seguimiento desactivados" in result
+    assert "automatic follow-up messages disabled" in result.lower()

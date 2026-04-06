@@ -10,6 +10,7 @@ from chatbot.ai_agent.models import (
     ERP_BASE_PATH,
     ContactInfo,
     CustomerItinerary,
+    PaymentInstructions,
 )
 from chatbot.ai_agent.tools.erp_utils import extract_erp_data
 
@@ -105,3 +106,85 @@ async def get_current_itinerary_context(
     except Exception as e:
         logger.error("Error retrieving itinerary context: %s", e)
         return "Error retrieving the customer's itinerary."
+
+
+async def get_pending_deposit_context(ctx: RunContext[AgentDeps]) -> str:
+    """Retrieves pending deposit information for confirmed tickets.
+
+    This instruction is active on every turn. It returns deposit details when
+    the customer has a confirmed ticket with an outstanding deposit, and returns
+    an empty string once all deposits are paid (effectively deactivating itself).
+
+    Args:
+        ctx: Agent run context with dependencies.
+    """
+    if not ctx.deps.contact_id:
+        return ""
+
+    try:
+        itinerary_resp = await ctx.deps.erp_client.post(
+            f"{ERP_BASE_PATH}.itinerary_controller.get_customer_itinerary",
+            json={"contact_id": ctx.deps.contact_id},
+            timeout=ERP_TIMEOUT_SECONDS,
+        )
+        itinerary_resp.raise_for_status()
+        itinerary = CustomerItinerary.model_validate(
+            extract_erp_data(itinerary_resp.json())
+        )
+    except Exception as e:
+        logger.error("Error retrieving itinerary for deposit context: %s", e)
+        return ""
+
+    confirmed_ticket_ids: list[str] = [
+        reservation.reservation_id
+        for item in itinerary.itinerary
+        for reservation in item.reservations
+        if reservation.status.lower() == "confirmed"
+    ]
+
+    if not confirmed_ticket_ids:
+        return ""
+
+    pending_deposits: list[str] = []
+    for ticket_id in confirmed_ticket_ids:
+        try:
+            dep_resp = await ctx.deps.erp_client.post(
+                f"{ERP_BASE_PATH}.deposit_controller.get_deposit_instructions",
+                json={"ticket_id": ticket_id},
+                timeout=ERP_TIMEOUT_SECONDS,
+            )
+            if dep_resp.is_error:
+                continue
+            instructions = PaymentInstructions.model_validate(
+                extract_erp_data(dep_resp.json())
+            )
+            if (
+                instructions.amount_remaining is not None
+                and instructions.amount_remaining > 0
+            ):
+                line = (
+                    f"- Ticket {instructions.ticket_id}: "
+                    f"remaining {instructions.amount_remaining} UYU"
+                    f" (required {instructions.amount_required} UYU, paid {instructions.amount_paid or 0} UYU)"
+                )
+                if instructions.due_at:
+                    line += f", due {instructions.due_at}"
+                if instructions.instructions:
+                    line += f"\n  Payment details: {instructions.instructions}"
+                pending_deposits.append(line)
+        except Exception as e:
+            logger.warning("Error checking deposit for ticket %s: %s", ticket_id, e)
+            continue
+
+    if not pending_deposits:
+        return ""
+
+    lines = [
+        "## Pending deposit payments",
+        "The customer has confirmed tickets with outstanding deposit payments:",
+        *pending_deposits,
+        "",
+        "Guide the customer to complete the deposit payment. "
+        "Once payment is confirmed, this context will no longer appear.",
+    ]
+    return "\n".join(lines)

@@ -32,7 +32,9 @@ message_table = sqlalchemy.Table(
     sqlalchemy.Column("role", String, nullable=False),
     sqlalchemy.Column("message", String, nullable=False),
     sqlalchemy.Column("tools_used", Text, nullable=True),
-    sqlalchemy.Column("active", Boolean, nullable=False, server_default=sqlalchemy.true()),
+    sqlalchemy.Column(
+        "active", Boolean, nullable=False, server_default=sqlalchemy.true()
+    ),
     sqlalchemy.Column("created_at", DateTime, default=func.now()),
 )
 
@@ -43,6 +45,8 @@ deposit_reminders_table = sqlalchemy.Table(
     sqlalchemy.Column("phone", String, nullable=False),
     sqlalchemy.Column("confirmed_at", DateTime, nullable=False),
     sqlalchemy.Column("reminded_at", DateTime, nullable=True),
+    sqlalchemy.Column("reminder_count", Integer, default=0, server_default="0"),
+    sqlalchemy.Column("ticket_date", DateTime, nullable=True),
 )
 
 # Database connection retry settings
@@ -55,26 +59,34 @@ def init_db():
     # Fix for SQLAlchemy: postgres:// is not valid, must be postgresql://
     if db_url.startswith("postgres://"):
         db_url = db_url.replace("postgres://", "postgresql://", 1)
-    
-    logger.info(f"🔌 Initializing database connection to: {db_url.split('@')[1] if '@' in db_url else 'unknown'}")
-    
+
+    logger.info(
+        f"🔌 Initializing database connection to: {db_url.split('@')[1] if '@' in db_url else 'unknown'}"
+    )
+
     engine = sqlalchemy.create_engine(db_url)
-    
+
     # Retry logic for create_all (waits for DB to be ready)
     for attempt in range(1, DB_MAX_RETRIES + 1):
         try:
-            logger.info(f"🔄 Attempting to create tables (attempt {attempt}/{DB_MAX_RETRIES})...")
+            logger.info(
+                f"🔄 Attempting to create tables (attempt {attempt}/{DB_MAX_RETRIES})..."
+            )
             metadata.create_all(engine)
             logger.info("✅ Database tables created/verified successfully")
             break
         except Exception as exc:
-            logger.error(f"❌ Database connection failed (attempt {attempt}/{DB_MAX_RETRIES}): {exc}")
+            logger.error(
+                f"❌ Database connection failed (attempt {attempt}/{DB_MAX_RETRIES}): {exc}"
+            )
             if attempt < DB_MAX_RETRIES:
                 logger.info(f"⏳ Retrying in {DB_RETRY_DELAY} seconds...")
                 time.sleep(DB_RETRY_DELAY)
             else:
-                logger.error(f"💀 All {DB_MAX_RETRIES} database connection attempts failed")
+                logger.error(
+                    f"💀 All {DB_MAX_RETRIES} database connection attempts failed"
+                )
                 raise
-    
+
     database = databases.Database(db_url, force_rollback=False)
     return database

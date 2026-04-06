@@ -12,10 +12,11 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import ValidationError
 from pydantic_ai import AgentRunResult
-from pydantic_ai.exceptions import ModelAPIError, UsageLimitExceeded
+from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError, UsageLimitExceeded
 from pydantic_ai.messages import ModelResponse, ToolCallPart
 
 from chatbot.ai_agent import get_cheese_agent
+from chatbot.ai_agent.agent import FALLBACK_MODEL
 from chatbot.ai_agent.context import webhook_context_manager
 from chatbot.ai_agent.dependencies import AgentDeps
 from chatbot.ai_agent.error_agent import run_error_agent
@@ -27,9 +28,12 @@ from chatbot.ai_agent.tools.ocr import (
     extract_payment_receipt_from_pdf,
 )
 from chatbot.ai_agent.tools.payments import (
+    PendingDepositStatus,
     erp_validation_user_message,
     parse_amount,
     register_deposit_payment,
+    user_has_pending_deposit,
+    validate_ocr_against_bank_account,
     validate_ticket_ownership,
 )
 from chatbot.api.utils import message_handler
@@ -148,13 +152,40 @@ def _extract_tools_used(result: AgentRunResult[str]) -> list[str]:
     return tools
 
 
+_PENDING_DEPOSIT_MESSAGES: dict[PendingDepositStatus, str] = {
+    PendingDepositStatus.NO_CONFIRMED_TICKETS: (
+        "You don't have any reservations in CONFIRMED status, so there is no pending payment to register."
+    ),
+    PendingDepositStatus.NO_PENDING_DEPOSITS: (
+        "All your confirmed reservations are already fully paid. "
+        "There is no outstanding deposit to register."
+    ),
+}
+
+
 async def _store_pending_file(
     user_number: str,
     message_id: str,
     file_path: str,
     is_pdf: bool,
 ) -> None:
-    """Guarda la ruta del archivo descargado y pide al usuario el número de ticket."""
+    """Verifica depósitos pendientes, guarda el archivo y pide al usuario el número de ticket."""
+    deposit_status = await user_has_pending_deposit(
+        erp_client=erp_client, user_phone=user_number
+    )
+    if deposit_status != PendingDepositStatus.HAS_PENDING:
+        logger.info(
+            "[receipt] User=%s deposit_status=%s — discarding file",
+            user_number,
+            deposit_status,
+        )
+        await whatsapp_manager.send_text(
+            user_number=user_number,
+            text=_PENDING_DEPOSIT_MESSAGES[deposit_status],
+            message_id=message_id,
+        )
+        return
+
     _pending_receipt[user_number] = _PendingReceipt(file_path=file_path, is_pdf=is_pdf)
     logger.info(
         "[receipt] Stored pending %s for user=%s, waiting for ticket_id",
@@ -205,7 +236,8 @@ async def _register_and_notify_payment(
     logger.info(
         "[ocr] Extracted receipt data — "
         "amount=%s | date=%s | reference=%s | account=%s | "
-        "recipient_name=%s | payment_method=%s | branch=%s | concept=%s",
+        "recipient_name=%s | payment_method=%s | branch=%s | concept=%s | "
+        "bank_name=%s | currency=%s",
         receipt.amount,
         receipt.date,
         receipt.reference,
@@ -214,6 +246,8 @@ async def _register_and_notify_payment(
         receipt.payment_method,
         receipt.branch,
         receipt.concept,
+        receipt.bank_name,
+        receipt.currency,
     )
 
     amount = parse_amount(receipt.amount)
@@ -254,6 +288,26 @@ async def _register_and_notify_payment(
         return
 
     ocr_payload = receipt.model_dump(exclude_none=True)
+
+    ocr_valid, ocr_reason = await validate_ocr_against_bank_account(
+        erp_client=erp_client,
+        ticket_id=ticket_id,
+        receipt=receipt,
+    )
+    if not ocr_valid:
+        logger.warning(
+            "[receipt] OCR bank validation failed for user=%s ticket=%s: %s",
+            user_number,
+            ticket_id,
+            ocr_reason,
+        )
+        await whatsapp_manager.send_text(
+            user_number=user_number,
+            text=f"⚠️ {ocr_reason}",
+            message_id=message_id,
+        )
+        return
+
     try:
         result = await register_deposit_payment(
             erp_client=erp_client,
@@ -479,26 +533,15 @@ async def _process_message(message: Message) -> None:
                 is_pdf=pending.is_pdf,
                 ticket_id=ticket_id_pending,
             )
+            return
         else:
-            # Allow the user to cancel and return to normal conversation
-            if incoming_msg.strip().lower() in {"/cancelar", "/cancel", "/restart"}:
-                _pending_receipt.pop(user_number, None)
-                await whatsapp_manager.send_text(
-                    user_number=user_number,
-                    text="Payment registration cancelled. What else can I help you with?",
-                    message_id=message_id,
-                )
-            else:
-                await whatsapp_manager.send_text(
-                    user_number=user_number,
-                    text=(
-                        "I couldn't find a ticket number in your message. "
-                        "Please send the ticket number (for example: TKT-2026-03-00018) "
-                        "or send /cancelar to cancel the payment registration:"
-                    ),
-                    message_id=message_id,
-                )
-        return
+            # No ticket_id found — stop waiting and pass the message to the AI agent
+            _pending_receipt.pop(user_number, None)
+            logger.info(
+                "[receipt] No ticket_id found in message for user=%s — releasing to AI agent",
+                user_number,
+            )
+            # Fall through to AI agent processing
 
     # ------------------------------------------------------------------
     # Human-control check: skip AI if operator has taken over this chat
@@ -557,9 +600,24 @@ async def _process_message(message: Message) -> None:
                     provider_exc,
                 )
                 provider_error = f"{type(provider_exc).__name__}: {provider_exc}"
-                result = await agent.run(
-                    incoming_msg, deps=deps, message_history=history
-                )
+                if (
+                    isinstance(provider_exc, ModelHTTPError)
+                    and provider_exc.status_code == 503
+                ):
+                    logger.info(
+                        "[fallback] 503 on primary model — switching to %s",
+                        FALLBACK_MODEL,
+                    )
+                    result = await agent.run(
+                        incoming_msg,
+                        deps=deps,
+                        message_history=history,
+                        model=FALLBACK_MODEL,
+                    )
+                else:
+                    result = await agent.run(
+                        incoming_msg, deps=deps, message_history=history
+                    )
             except UsageLimitExceeded as ule:
                 logger.warning(
                     "UsageLimitExceeded for %s: %s. Summarizing history and retrying...",
@@ -666,6 +724,19 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
     user_number = message_data.user_number
     message_id = message_data.message_id
 
+    # --- Unsupported document format ---
+    if message_data.unsupported_format:
+        await whatsapp_manager.mark_read(message_id)
+        await whatsapp_manager.send_text(
+            user_number=user_number,
+            text=(
+                "The file format is not supported. "
+                "Please send your payment receipt as a JPG, PNG or PDF."
+            ),
+            message_id=message_id,
+        )
+        return OK_STATUS
+
     # --- Image/PDF with ticket in caption: OCR already done → register payment ---
     if message_data.receipt is not None:
         await whatsapp_manager.mark_read(message_id)
@@ -724,6 +795,22 @@ async def _process_image_receipt(
     if receipt is None or ticket_id is None or file_path is None:
         return
 
+    deposit_status = await user_has_pending_deposit(
+        erp_client=erp_client, user_phone=user_number
+    )
+    if deposit_status != PendingDepositStatus.HAS_PENDING:
+        logger.info(
+            "[receipt] User=%s deposit_status=%s — skipping registration",
+            user_number,
+            deposit_status,
+        )
+        await whatsapp_manager.send_text(
+            user_number=user_number,
+            text=_PENDING_DEPOSIT_MESSAGES[deposit_status],
+            message_id=message_id,
+        )
+        return
+
     amount = parse_amount(receipt.amount)
     if amount is None:
         logger.error(
@@ -762,6 +849,26 @@ async def _process_image_receipt(
         return
 
     ocr_payload = receipt.model_dump(exclude_none=True)
+
+    ocr_valid, ocr_reason = await validate_ocr_against_bank_account(
+        erp_client=erp_client,
+        ticket_id=ticket_id,
+        receipt=receipt,
+    )
+    if not ocr_valid:
+        logger.warning(
+            "[receipt] OCR bank validation failed for user=%s ticket=%s: %s",
+            user_number,
+            ticket_id,
+            ocr_reason,
+        )
+        await whatsapp_manager.send_text(
+            user_number=user_number,
+            text=f"⚠️ {ocr_reason}",
+            message_id=message_id,
+        )
+        return
+
     try:
         result = await register_deposit_payment(
             erp_client=erp_client,

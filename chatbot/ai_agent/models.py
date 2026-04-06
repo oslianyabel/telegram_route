@@ -532,13 +532,38 @@ class ModificationPolicy(BaseModel):
     message: str | None = None
 
 
-class CancellationImpact(BaseModel):
-    """Penalties and consequences of a cancellation."""
+class CancellationPolicy(BaseModel):
+    """Cancellation policy details returned by the ERP."""
 
-    allowed: bool = False
+    cancel_until_hours_before: int | None = None
+
+
+class CancellationImpact(BaseModel):
+    """Penalties and consequences of a cancellation.
+
+    Maps the ERP ``pricing_controller.get_cancellation_impact`` response.
+    """
+
+    reservation_id: str | None = None
+    experience_id: str | None = None
+    can_cancel: bool = False
     penalty: float | None = None
     refund_amount: float | None = None
-    message: str | None = None
+    cancellation_policy: CancellationPolicy | None = None
+    consequences: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize(cls, data: Any) -> Any:
+        """Accept legacy field names used by the old model."""
+        if isinstance(data, dict):
+            # Legacy: ``allowed`` → ``can_cancel``
+            if "allowed" in data and "can_cancel" not in data:
+                data["can_cancel"] = data.pop("allowed")
+            # Legacy: ``message`` → ``consequences``
+            if "message" in data and "consequences" not in data:
+                data["consequences"] = data.pop("message")
+        return data
 
 
 # ---------------------------------------------------------------------------
@@ -591,12 +616,23 @@ class EstablishmentExperience(BaseModel):
     route_price: float | None = None
 
 
+class BankAccount(BaseModel):
+    """Bank account entry returned inside EstablishmentDetail."""
+
+    bank_account_id: str | None = None
+    account_number: str | None = None
+    bank_name: str | None = None
+    currency: str | None = None
+    holder: str | None = None
+    iban: str | None = None
+
+
 class EstablishmentDetail(BaseModel):
     """Full establishment detail from establishment_controller.get_establishment_details.
 
     ERP response fields: company_id, company_name, status, email, phone,
     website, description, address, contacts, experiences,
-    tickets_by_status, logo, documents, photos, links, pdfs.
+    tickets_by_status, logo, documents, photos, links, pdfs, bank_account.
     """
 
     establishment_id: str
@@ -615,6 +651,7 @@ class EstablishmentDetail(BaseModel):
     photos: list[Any] = Field(default_factory=list)
     links: list[Any] = Field(default_factory=list)
     pdfs: list[Any] = Field(default_factory=list)
+    bank_account: list[BankAccount] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -758,13 +795,32 @@ class CancellationResult(BaseModel):
     slot_id: str | None = None
 
 
-class ModificationPreview(BaseModel):
-    """Preview of the impact of a reservation modification."""
+class PriceImpact(BaseModel):
+    """Price breakdown returned by ticket_controller.modify_reservation_preview."""
 
-    preview_id: str | None = None
-    changes: list[dict[str, Any]] = Field(default_factory=list)
-    price_delta: float | None = None
-    message: str | None = None
+    current_price: float | None = None
+    new_price: float | None = None
+    price_difference: float | None = None
+
+
+class ModificationPreview(BaseModel):
+    """Preview returned by ticket_controller.modify_reservation_preview.
+
+    ERP response fields: reservation_id, current_slot, current_party_size,
+    new_slot, new_slot_date, new_slot_time, slot_change_allowed,
+    new_party_size, party_size_change_allowed, price_impact.
+    """
+
+    reservation_id: str
+    current_slot: str | None = None
+    current_party_size: int | None = None
+    new_slot: str | None = None
+    new_slot_date: str | None = None
+    new_slot_time: str | None = None
+    slot_change_allowed: bool = True
+    new_party_size: int | None = None
+    party_size_change_allowed: bool = True
+    price_impact: PriceImpact | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -840,6 +896,63 @@ class RouteBookingStatus(BaseModel):
         if isinstance(data, dict) and "deposit_required" in data:
             data["deposit_required"] = bool(data["deposit_required"])
         return data
+
+
+class RouteTicketChange(BaseModel):
+    """A single ticket change inside a route modification request.
+
+    Used as input for route_booking_controller.modify_route_booking_preview
+    and route_booking_controller.confirm_route_modification.
+    """
+
+    ticket_id: str
+    new_slot: str | None = None
+    party_size: int | None = None
+
+
+class RouteTicketChangePreview(BaseModel):
+    """Preview of a single ticket change within a route modification.
+
+    ERP response fields per change: ticket_id, current_slot, current_party_size,
+    new_slot, slot_changed, new_party_size, party_size_changed.
+    """
+
+    ticket_id: str
+    current_slot: str | None = None
+    current_party_size: int | None = None
+    new_slot: str | None = None
+    slot_changed: bool = False
+    new_party_size: int | None = None
+    party_size_changed: bool = False
+
+
+class RouteModificationPreview(BaseModel):
+    """Preview returned by route_booking_controller.modify_route_booking_preview.
+
+    ERP request: route_booking_id, changes (list of ticket_id + new_slot/party_size).
+    ERP response fields: route_booking_id, changes (list of RouteTicketChangePreview), note.
+    """
+
+    route_booking_id: str
+    changes: list[RouteTicketChangePreview] = Field(default_factory=list)
+    note: str | None = None
+
+
+class RouteModificationResult(BaseModel):
+    """Result of route_booking_controller.confirm_route_modification."""
+
+    route_booking_id: str
+    status: str | None = None
+    changes_applied: list[str] = Field(default_factory=list)
+
+
+class RouteCancellationResult(BaseModel):
+    """Result of route_booking_controller.cancel_route_booking."""
+
+    route_booking_id: str
+    old_status: str | None = None
+    new_status: str | None = None
+    cancelled_tickets: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -1014,6 +1127,20 @@ class PaymentReceipt(BaseModel):
     concept: str | None = Field(
         None,
         description="Concepto o motivo del pago.",
+    )
+    bank_name: str | None = Field(
+        None,
+        description=(
+            "Nombre del banco o entidad financiera a la que se realizó el pago. "
+            "Busca etiquetas como 'Banco', 'Bank', 'Entidad', o el nombre del banco en el encabezado."
+        ),
+    )
+    currency: str | None = Field(
+        None,
+        description=(
+            "Moneda de la transacción. "
+            "Busca el código ISO de tres letras (UYU, USD, EUR, etc.) o el símbolo de moneda."
+        ),
     )
 
 

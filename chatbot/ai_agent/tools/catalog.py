@@ -231,8 +231,8 @@ async def get_availability(
     Args:
         ctx: Agent run context with dependencies.
         experience_id: ERP id of the experience.
-        date_from: Start date in DD-MM-YYYY format (e.g. "01-03-2026").
-        date_to: End date in DD-MM-YYYY format (e.g. "31-12-2026").
+        date_from: Start date in YYYY-MM-DD format (e.g. "2026-04-01").
+        date_to: End date in YYYY-MM-DD format (e.g. "2026-12-31").
     """
     logger.info(
         "[get_availability] experience_id=%s date_from=%s date_to=%s",

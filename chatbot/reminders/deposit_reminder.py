@@ -13,11 +13,16 @@ from chatbot.db.services import Services
 from chatbot.messaging.telegram_notifier import notify_error
 from chatbot.messaging.telegram_notifier import send_message as send_telegram_message
 from chatbot.messaging.whatsapp import whatsapp_manager
-from chatbot.reminders.lead_followup import CHANNEL_TELEGRAM, infer_channel
+from chatbot.reminders.lead_followup import (
+    CHANNEL_TELEGRAM,
+    FOLLOW_UP_OPTOUT_MARKER,
+    infer_channel,
+)
 
 logger = logging.getLogger(__name__)
 
-DEPOSIT_REMINDER_DELAY: timedelta = timedelta(hours=12)
+DEPOSIT_REMINDER_DELAY: timedelta = timedelta(hours=4)
+CLIENT_INACTIVITY_THRESHOLD: timedelta = timedelta(hours=4)
 SCAN_INTERVAL_SECONDS: int = 900  # 15 minutos
 ERP_TIMEOUT_SECONDS: float = 15.0
 
@@ -81,18 +86,15 @@ async def process_pending_deposit_reminders(
     db_services: Services,
     erp_client: httpx.AsyncClient,
 ) -> None:
-    """Procesa los tickets confirmados cuya seña no fue pagada tras 12h.
+    """Procesa los tickets confirmados cuya seña no fue pagada.
 
-    Para cada ticket que:
-      - Fue confirmado hace más de 12h (DEPOSIT_REMINDER_DELAY)
-      - Aún no recibió un recordatorio (reminded_at IS NULL)
-    Consulta el ERP y si amount_remaining > 0 envía el recordatorio por WhatsApp
-    y marca el registro como procesado.
+    Envía hasta 3 recordatorios por ticket con al menos 4h de separación entre ellos,
+    respetando el opt-out del cliente y verificando que el cliente lleve más de 4h sin escribir.
     """
     now = datetime.now(UTC).replace(tzinfo=None)
     cutoff = now - DEPOSIT_REMINDER_DELAY
 
-    pending = await db_services.get_unreminded_tickets(cutoff)
+    pending = await db_services.get_pending_deposit_reminders(cutoff)
     if not pending:
         logger.debug("[deposit_reminder] No hay tickets pendientes de recordatorio")
         return
@@ -106,6 +108,36 @@ async def process_pending_deposit_reminders(
         phone: str = row.phone  # type: ignore[attr-defined]
 
         try:
+            messages = await db_services.get_messages(phone)
+
+            # Verificar opt-out del cliente
+            opted_out = any(
+                getattr(m, "role", None) == "system"
+                and getattr(m, "message", "") == FOLLOW_UP_OPTOUT_MARKER
+                for m in messages
+            )
+            if opted_out:
+                logger.debug(
+                    "[deposit_reminder] %s opt-out activo, omitiendo ticket=%s",
+                    phone,
+                    ticket_id,
+                )
+                continue
+
+            # Verificar inactividad mínima de 4h del cliente
+            last_user_msg = await db_services.get_last_user_message(phone)
+            if last_user_msg is not None:
+                last_user_at = getattr(last_user_msg, "created_at", None)
+                if last_user_at is not None:
+                    if last_user_at.tzinfo is not None:
+                        last_user_at = last_user_at.replace(tzinfo=None)
+                    if now - last_user_at < CLIENT_INACTIVITY_THRESHOLD:
+                        logger.debug(
+                            "[deposit_reminder] %s estuvo activo recientemente, omitiendo ticket=%s",
+                            phone,
+                            ticket_id,
+                        )
+                        continue
             pay_info = await _get_payment_instructions(
                 erp_client=erp_client, ticket_id=ticket_id
             )
@@ -115,16 +147,14 @@ async def process_pending_deposit_reminders(
 
             if not pay_info.amount_remaining or pay_info.amount_remaining <= 0:
                 logger.info(
-                    "[deposit_reminder] ticket=%s ya pagado (amount_remaining=%s), omitiendo",
+                    "[deposit_reminder] ticket=%s ya pagado (amount_remaining=%s), excluyendo permanentemente",
                     ticket_id,
                     pay_info.amount_remaining,
                 )
-                # Marcar igualmente para no volver a procesarlo
-                await db_services.mark_deposit_reminder_sent(ticket_id)
+                await db_services.mark_deposit_paid(ticket_id)
                 continue
 
             message = _build_reminder_message(pay_info)
-            messages = await db_services.get_messages(phone)
             channel = infer_channel(conversation_id=phone, messages=messages)
             if channel == CHANNEL_TELEGRAM:
                 ok = await send_telegram_message(chat_id=phone, text=message)

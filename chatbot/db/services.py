@@ -1,7 +1,7 @@
 import json
 import logging
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import asyncpg
@@ -46,6 +46,27 @@ class Services:
 
         users = await self.database.fetch_all(query)
         return users
+
+    async def get_users_with_recent_user_message(self, since: datetime) -> list:
+        """Devuelve usuarios que tienen al menos un mensaje de rol 'user' posterior a *since*.
+
+        Permite al worker de lead follow-up omitir usuarios inactivos sin cargar
+        todos los mensajes de la base de datos.
+        """
+        subq = (
+            sqlalchemy.select(message_table.c.user_phone)
+            .where(message_table.c.role == "user")
+            .where(message_table.c.active.is_(True))
+            .where(message_table.c.created_at >= since)
+            .distinct()
+            .subquery()
+        )
+        query = users_table.select().where(
+            users_table.c.phone.in_(sqlalchemy.select(subq.c.user_phone))
+        )
+        if self.debug:
+            logger.debug(query)
+        return await self.database.fetch_all(query)
 
     def _normalize_user_data(self, **kwargs) -> dict:
         """Normaliza y filtra datos de usuario, eliminando None y espacios."""
@@ -291,7 +312,12 @@ class Services:
         messages = await self.get_chat(phone)
         return json.dumps(messages)
 
-    async def register_confirmed_ticket(self, ticket_id: str, phone: str) -> None:
+    async def register_confirmed_ticket(
+        self,
+        ticket_id: str,
+        phone: str,
+        ticket_date: date | None = None,
+    ) -> None:
         """Registra un ticket confirmado para el seguimiento del recordatorio de seña.
 
         Si el ticket ya existe (re-confirmación), no hace nada.
@@ -306,38 +332,81 @@ class Services:
                 "[deposit_reminders] ticket_id=%s ya registrado, ignorando", ticket_id
             )
             return
+        ticket_date_dt: datetime | None = (
+            datetime.combine(ticket_date, datetime.min.time()) if ticket_date else None
+        )
         query = deposit_reminders_table.insert().values(
             ticket_id=ticket_id,
             phone=phone,
             confirmed_at=datetime.now(UTC).replace(tzinfo=None),
             reminded_at=None,
+            reminder_count=0,
+            ticket_date=ticket_date_dt,
         )
         await self.database.execute(query)
         logger.info(
-            "[deposit_reminders] Ticket registrado para recordatorio: ticket_id=%s phone=%s",
+            "[deposit_reminders] Ticket registrado para recordatorio: ticket_id=%s phone=%s ticket_date=%s",
             ticket_id,
             phone,
+            ticket_date,
         )
 
-    async def get_unreminded_tickets(self, cutoff: datetime) -> list:
-        """Devuelve los tickets confirmados antes de *cutoff* cuyo recordatorio aún no fue enviado."""
+    async def get_pending_deposit_reminders(self, cutoff: datetime) -> list:
+        """Devuelve tickets que necesitan recordatorio de seña.
+
+        Conditions:
+        - reminder_count < 3 (máximo 3 recordatorios)
+        - reminded_at IS NULL (primer recordatorio) o reminded_at <= cutoff (4h desde el último)
+        - ticket_date >= hoy o ticket_date IS NULL (solo tickets con fecha futura)
+        """
+        today_dt = datetime.combine(date.today(), datetime.min.time())
         query = (
             deposit_reminders_table.select()
-            .where(deposit_reminders_table.c.confirmed_at <= cutoff)
-            .where(deposit_reminders_table.c.reminded_at.is_(None))
+            .where(deposit_reminders_table.c.reminder_count < 3)
+            .where(
+                sqlalchemy.or_(
+                    deposit_reminders_table.c.reminded_at.is_(None),
+                    deposit_reminders_table.c.reminded_at <= cutoff,
+                )
+            )
+            .where(
+                sqlalchemy.or_(
+                    deposit_reminders_table.c.ticket_date.is_(None),
+                    deposit_reminders_table.c.ticket_date >= today_dt,
+                )
+            )
         )
         return await self.database.fetch_all(query)
 
     async def mark_deposit_reminder_sent(self, ticket_id: str) -> None:
-        """Marca el recordatorio de un ticket como enviado."""
+        """Incrementa el contador de recordatorios y actualiza el timestamp del último enviado."""
         query = (
             deposit_reminders_table.update()
             .where(deposit_reminders_table.c.ticket_id == ticket_id)
-            .values(reminded_at=datetime.now(UTC).replace(tzinfo=None))
+            .values(
+                reminded_at=datetime.now(UTC).replace(tzinfo=None),
+                reminder_count=deposit_reminders_table.c.reminder_count + 1,
+            )
         )
         await self.database.execute(query)
         logger.info(
             "[deposit_reminders] Recordatorio marcado como enviado: ticket_id=%s",
+            ticket_id,
+        )
+
+    async def mark_deposit_paid(self, ticket_id: str) -> None:
+        """Marca un ticket como pagado poniendo reminder_count=3 para excluirlo permanentemente."""
+        query = (
+            deposit_reminders_table.update()
+            .where(deposit_reminders_table.c.ticket_id == ticket_id)
+            .values(
+                reminder_count=3,
+                reminded_at=datetime.now(UTC).replace(tzinfo=None),
+            )
+        )
+        await self.database.execute(query)
+        logger.info(
+            "[deposit_reminders] Ticket marcado como pagado (reminder_count=3): ticket_id=%s",
             ticket_id,
         )
 
