@@ -271,8 +271,8 @@ async def list_experiences_by_availability(
 
     Args:
         ctx: Agent run context with dependencies.
-        date_from: Start date in DD-MM-YYYY format (e.g. "01-03-2026").
-        date_to: End date in DD-MM-YYYY format (e.g. "31-03-2026").
+        date_from: Start date in YYYY-MM-DD format (e.g. "2026-03-01").
+        date_to: End date in YYYY-MM-DD format (e.g. "2026-03-31").
     """
     logger.info(
         "[list_experiences_by_availability] date_from=%s date_to=%s",
@@ -285,9 +285,11 @@ async def list_experiences_by_availability(
         timeout=ERP_TIMEOUT_SECONDS,
     )
     response.raise_for_status()
-    data: list[dict[str, Any]] = extract_erp_data(response.json())
+    data: list[dict[str, Any]] | dict[str, Any] = extract_erp_data(response.json())
+    # When called without experience_id the ERP wraps results under an
+    # "experiences" key: {"date_from": ..., "experiences": [...], ...}
     if isinstance(data, dict):
-        data = [data]
+        data = data.get("experiences", [data])
     return [AvailabilityResponse.model_validate(item) for item in data]
 
 

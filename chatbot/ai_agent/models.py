@@ -956,6 +956,69 @@ class RouteCancellationResult(BaseModel):
     cancelled_tickets: list[str] = Field(default_factory=list)
 
 
+class RouteActivityInput(BaseModel):
+    """A single activity to add to a route booking (input payload).
+
+    Fields: experience_id, slot_id.
+    """
+
+    experience_id: str
+    slot_id: str
+
+
+class RouteActivityPreviewItem(BaseModel):
+    """Preview detail for an activity to be added to a route booking.
+
+    ERP response fields: experience_id, experience_name, slot_id, date, time,
+    price, deposit, party_size.
+    """
+
+    experience_id: str
+    experience_name: str | None = None
+    slot_id: str
+    date: str | None = None
+    time: str | None = None
+    price: float | None = None
+    deposit: float | None = None
+    party_size: int | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            for field in ("date", "time"):
+                if data.get(field) == "None":
+                    data[field] = None
+        return data
+
+
+class AddActivitiesToRoutePreview(BaseModel):
+    """Preview returned by route_booking_controller.add_activities_to_route_preview.
+
+    ERP request: route_booking_id, activities (list of {experience_id, slot_id}).
+    ERP response fields: route_booking_id, activities_to_add, total_additional_price,
+    total_additional_deposit, note.
+    """
+
+    route_booking_id: str
+    activities_to_add: list[RouteActivityPreviewItem] = Field(default_factory=list)
+    total_additional_price: float | None = None
+    total_additional_deposit: float | None = None
+    note: str | None = None
+
+
+class AddActivitiesToRouteResult(BaseModel):
+    """Result of route_booking_controller.confirm_add_activities_to_route.
+
+    ERP response fields: route_booking_id, new_tickets, status, tickets_count.
+    """
+
+    route_booking_id: str
+    new_tickets: list[str] = Field(default_factory=list)
+    status: str | None = None
+    tickets_count: int | None = None
+
+
 # ---------------------------------------------------------------------------
 # 11. Payments
 # ---------------------------------------------------------------------------

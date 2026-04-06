@@ -10,6 +10,8 @@ from pydantic_ai import ModelRetry, RunContext
 from chatbot.ai_agent.dependencies import AgentDeps
 from chatbot.ai_agent.models import (
     ERP_BASE_PATH,
+    AddActivitiesToRoutePreview,
+    AddActivitiesToRouteResult,
     CancellationImpact,
     CancellationResult,
     CustomerItinerary,
@@ -19,6 +21,7 @@ from chatbot.ai_agent.models import (
     PendingTicket,
     ReservationsListResponse,
     ReservationStatusDetail,
+    RouteActivityInput,
     RouteBookingStatus,
     RouteModificationPreview,
     RouteTicketChange,
@@ -794,3 +797,128 @@ async def confirm_route_modification(
         f"Tickets actualizados: {', '.join(modified_tickets)}. "
         f"Estado actual: {new_status}."
     )
+
+
+# ------------------------------------------------------------------
+# 13. Add activities to route preview
+# ------------------------------------------------------------------
+
+
+async def add_activities_to_route_preview(
+    ctx: RunContext[AgentDeps],
+    route_booking_id: str,
+    activities: list[RouteActivityInput],
+) -> AddActivitiesToRoutePreview | str:
+    """Check whether adding new activities to a route booking is possible and preview the extra cost.
+
+    Call this BEFORE confirm_add_activities_to_route so the user can review the
+    additional price and deposit before confirming. Share the
+    total_additional_price and total_additional_deposit with the user and ask
+    for explicit confirmation before proceeding.
+
+    Args:
+        ctx: Agent run context with dependencies.
+        route_booking_id: ERP route booking ID (e.g. "RB-2026-04-00017").
+        activities: List of activities to add, each with experience_id and slot_id.
+    """
+    logger.info(
+        "[add_activities_to_route_preview] route_booking_id=%s activities=%s",
+        route_booking_id,
+        activities,
+    )
+
+    if not activities:
+        raise ModelRetry(
+            "At least one activity must be provided to preview adding activities to the route."
+        )
+
+    activities_payload = [a.model_dump() for a in activities]
+
+    response = await ctx.deps.erp_client.post(
+        f"{ERP_BASE_PATH}.route_booking_controller.add_activities_to_route_preview",
+        json={
+            "route_booking_id": route_booking_id,
+            "activities": activities_payload,
+        },
+        timeout=ERP_TIMEOUT_SECONDS,
+    )
+    if response.is_error:
+        erp_message = extract_erp_error(response.json())
+        logger.error(
+            "[add_activities_to_route_preview] ERP error %s: %s",
+            response.status_code,
+            erp_message,
+        )
+        return f"No es posible previsualizar la adición de actividades: {erp_message}"
+
+    data: dict[str, Any] = extract_erp_data(response.json())
+    preview = AddActivitiesToRoutePreview.model_validate(data)
+    logger.info(
+        "[add_activities_to_route_preview] route_booking_id=%s total_additional_price=%s",
+        preview.route_booking_id,
+        preview.total_additional_price,
+    )
+    return preview
+
+
+# ------------------------------------------------------------------
+# 14. Confirm add activities to route
+# ------------------------------------------------------------------
+
+
+async def confirm_add_activities_to_route(
+    ctx: RunContext[AgentDeps],
+    route_booking_id: str,
+    activities: list[RouteActivityInput],
+) -> AddActivitiesToRouteResult | str:
+    """Add new activities to an existing route booking after user confirmation.
+
+    Must be called AFTER add_activities_to_route_preview and only when the user
+    has explicitly confirmed the additional cost shown in the preview.
+
+    Args:
+        ctx: Agent run context with dependencies.
+        route_booking_id: ERP route booking ID (e.g. "RB-2026-04-00017").
+        activities: List of activities to add, each with experience_id and slot_id.
+    """
+    logger.info(
+        "[confirm_add_activities_to_route] route_booking_id=%s activities=%s",
+        route_booking_id,
+        activities,
+    )
+
+    if not activities:
+        raise ModelRetry(
+            "At least one activity must be provided to confirm adding activities to the route."
+        )
+
+    activities_payload = [a.model_dump() for a in activities]
+
+    response = await ctx.deps.erp_client.post(
+        f"{ERP_BASE_PATH}.route_booking_controller.confirm_add_activities_to_route",
+        json={
+            "route_booking_id": route_booking_id,
+            "activities": activities_payload,
+        },
+        timeout=ERP_TIMEOUT_SECONDS,
+    )
+    if response.is_error:
+        erp_message = extract_erp_error(response.json())
+        logger.error(
+            "[confirm_add_activities_to_route] ERP error %s: %s",
+            response.status_code,
+            erp_message,
+        )
+        raise ModelRetry(
+            f"ERP rechazó la adición de actividades ({response.status_code}): {erp_message}."
+        )
+
+    data: dict[str, Any] = extract_erp_data(response.json())
+    result = AddActivitiesToRouteResult.model_validate(data)
+    logger.info(
+        "[confirm_add_activities_to_route] route_booking_id=%s new_tickets=%s status=%s",
+        result.route_booking_id,
+        result.new_tickets,
+        result.status,
+    )
+    return result

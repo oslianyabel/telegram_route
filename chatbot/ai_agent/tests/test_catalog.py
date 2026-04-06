@@ -30,6 +30,7 @@ from chatbot.ai_agent.tools.catalog import (
     get_route_detail,
     list_establishments,
     list_experiences,
+    list_experiences_by_availability,
     list_routes,
 )
 
@@ -197,12 +198,12 @@ async def test_get_availability(ctx: RunContext[AgentDeps]) -> None:
     result = await get_availability(
         ctx,
         experience_id=exp_id,
-        date_from="01-03-2026",
-        date_to="31-12-2026",
+        date_from="2026-04-10",
+        date_to="2026-04-10",
     )
 
     print(
-        f"\n  get_availability({exp_id}, 01-03-2026 -> 31-12-2026) -> {len(result.slots)} slots"
+        f"\n  get_availability({exp_id}, 2026-04-10 -> 2026-04-10) -> {len(result.slots)} slots"
     )
     assert isinstance(result, AvailabilityResponse)
     assert result.experience_id == exp_id
@@ -224,3 +225,27 @@ async def test_get_route_availability(ctx: RunContext[AgentDeps]) -> None:
     print(f"\n  get_route_availability({route_id}) -> {result}")
     assert isinstance(result, dict)
     assert "route_id" in result
+
+
+# uv run pytest -s chatbot/ai_agent/tests/test_catalog.py::test_list_experiences_by_availability
+@pytest.mark.anyio
+async def test_list_experiences_by_availability(ctx: RunContext[AgentDeps]) -> None:
+    """Debe retornar las experiencias con disponibilidad para el 2026-04-10."""
+    result = await list_experiences_by_availability(
+        ctx,
+        date_from="2026-04-10",
+        date_to="2026-04-10",
+    )
+
+    print(
+        f"\n  list_experiences_by_availability(2026-04-10) -> {len(result)} experiencias"
+    )
+    for item in result:
+        print(f"    experience_id={item.experience_id}  slots={len(item.slots)}")
+        for slot in item.slots:
+            print(
+                f"      slot_id={slot.slot_id}  available_capacity={slot.available_capacity}"
+            )
+
+    assert isinstance(result, list)
+    assert all(isinstance(item, AvailabilityResponse) for item in result)

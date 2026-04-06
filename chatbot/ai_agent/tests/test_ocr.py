@@ -4,9 +4,6 @@
 
 The test hits the real Gemini API with the image at:
     static/images/comprobante.jpeg
-
-Run:
-    uv run pytest -s chatbot/ai_agent/tests/test_ocr.py
 """
 
 from __future__ import annotations
@@ -20,7 +17,7 @@ from chatbot.ai_agent.tools.ocr import extract_payment_receipt
 
 # Ruta absoluta resuelta desde la raíz del proyecto
 _RECEIPT_PATH: Path = (
-    Path(__file__).parents[3] / "static" / "images" / "comprobante2.png"
+    Path(__file__).parents[3] / "static" / "images" / "comprobante.jpeg"
 )
 
 
@@ -52,6 +49,8 @@ async def test_extract_payment_receipt() -> None:
     print(f"  payment_method     = {receipt.payment_method}")
     print(f"  branch             = {receipt.branch}")
     print(f"  concept            = {receipt.concept}")
+    print(f"  bank_name          = {receipt.bank_name}")
+    print(f"  currency           = {receipt.currency}")
 
     # Al menos algún campo debe haber sido extraído
     extracted = [
@@ -63,6 +62,8 @@ async def test_extract_payment_receipt() -> None:
         receipt.payment_method,
         receipt.branch,
         receipt.concept,
+        receipt.bank_name,
+        receipt.currency,
     ]
     assert any(field is not None for field in extracted), (
         "El agente no pudo extraer ningún campo del comprobante."

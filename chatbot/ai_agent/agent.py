@@ -17,8 +17,10 @@ from chatbot.ai_agent.instructions import (
 )
 from chatbot.ai_agent.models import ERP_BASE_PATH, GoogleModel, ReservationStatus
 from chatbot.ai_agent.tools.booking import (
+    add_activities_to_route_preview,
     cancel_reservation,
     cancel_route_booking,
+    confirm_add_activities_to_route,
     confirm_modification,
     confirm_route_modification,
     create_pending_reservation,
@@ -149,6 +151,8 @@ AGENT_TOOLS = [
     cancel_route_booking,
     modify_route_booking_preview,
     confirm_route_modification,
+    add_activities_to_route_preview,
+    confirm_add_activities_to_route,
     # Pricing & cancellation policy
     get_cancellation_impact,
     # Payments
