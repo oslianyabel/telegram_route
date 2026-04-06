@@ -70,7 +70,6 @@ async def test_get_customer_itinerary(monkeypatch):
         erp_client=DummyERPClient(),  # type: ignore
         db_services=None,  # type: ignore
         whatsapp_client=None,  # type: ignore
-        webhook_context=None,  # type: ignore
         contact_id="+5351054482",
     )
     ctx = type("Ctx", (), {"deps": deps})()

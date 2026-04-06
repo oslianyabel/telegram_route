@@ -1,0 +1,530 @@
+{
+    "info": {
+        "name": "Cheese Bot – ERP API",
+        "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+        "description": "Endpoints /erp/* del Cheese Bot. Configura las variables base_url y api_key antes de usar."
+    },
+    "variable": [
+        {
+            "key": "base_url",
+            "value": "https://motorcycles-seminars-organisation-easier.trycloudflare.com",
+            "type": "string"
+        },
+        {
+            "key": "api_key",
+            "value": "YOUR_API_KEY_HERE",
+            "type": "string"
+        }
+    ],
+    "item": [
+        {
+            "name": "Messaging",
+            "item": [
+                {
+                    "name": "Send WhatsApp message",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "X-API-Key",
+                                "value": "{{api_key}}"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{base_url}}/erp/send-whatsapp",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "erp",
+                                "send-whatsapp"
+                            ]
+                        },
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"contact_id\": \"123\",\n  \"message\": \"Hola, tu reserva está lista.\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        },
+                        "description": "Envía un mensaje de WhatsApp al contacto. Requiere ventana activa de 24h de META."
+                    }
+                },
+                {
+                    "name": "Send Telegram message",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "X-API-Key",
+                                "value": "{{api_key}}"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{base_url}}/erp/send-telegram",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "erp",
+                                "send-telegram"
+                            ]
+                        },
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"contact_id\": \"987654321\",\n  \"message\": \"Hola, tu reserva está lista.\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        },
+                        "description": "contact_id es el Telegram chat ID del destinatario."
+                    }
+                }
+            ]
+        },
+        {
+            "name": "Ticket Status",
+            "item": [
+                {
+                    "name": "Ticket confirmado (CONFIRMED)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "X-API-Key",
+                                "value": "{{api_key}}"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{base_url}}/erp/ticket-status",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "erp",
+                                "ticket-status"
+                            ]
+                        },
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"contact_id\": \"123\",\n  \"ticket_id\": \"456\",\n  \"new_status\": \"CONFIRMED\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        },
+                        "description": "El bot notifica al cliente que su ticket fue confirmado y le envía las instrucciones de pago de la seña."
+                    }
+                },
+                {
+                    "name": "Ticket completado / encuesta (COMPLETED)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "X-API-Key",
+                                "value": "{{api_key}}"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{base_url}}/erp/ticket-status",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "erp",
+                                "ticket-status"
+                            ]
+                        },
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"contact_id\": \"123\",\n  \"ticket_id\": \"456\",\n  \"new_status\": \"COMPLETED\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        },
+                        "description": "El bot envía una encuesta de satisfacción (1-5) al cliente. La fecha del slot debe ser pasada."
+                    }
+                },
+                {
+                    "name": "Ticket cancelado (CANCELLED)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "X-API-Key",
+                                "value": "{{api_key}}"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{base_url}}/erp/ticket-status",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "erp",
+                                "ticket-status"
+                            ]
+                        },
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"contact_id\": \"123\",\n  \"ticket_id\": \"456\",\n  \"new_status\": \"CANCELLED\",\n  \"observations\": \"El cliente solicitó la cancelación.\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    }
+                },
+                {
+                    "name": "Ticket rechazado (REJECTED)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "X-API-Key",
+                                "value": "{{api_key}}"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{base_url}}/erp/ticket-status",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "erp",
+                                "ticket-status"
+                            ]
+                        },
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"contact_id\": \"123\",\n  \"ticket_id\": \"456\",\n  \"new_status\": \"REJECTED\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    }
+                },
+                {
+                    "name": "Ticket vencido (EXPIRED)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "X-API-Key",
+                                "value": "{{api_key}}"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{base_url}}/erp/ticket-status",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "erp",
+                                "ticket-status"
+                            ]
+                        },
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"contact_id\": \"123\",\n  \"ticket_id\": \"456\",\n  \"new_status\": \"EXPIRED\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    }
+                },
+                {
+                    "name": "Check-in registrado (CHECKED_IN)",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "X-API-Key",
+                                "value": "{{api_key}}"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{base_url}}/erp/ticket-status",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "erp",
+                                "ticket-status"
+                            ]
+                        },
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"contact_id\": \"123\",\n  \"ticket_id\": \"456\",\n  \"new_status\": \"CHECKED_IN\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    }
+                }
+            ]
+        },
+        {
+            "name": "Human Control",
+            "item": [
+                {
+                    "name": "Tomar control – WhatsApp",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "X-API-Key",
+                                "value": "{{api_key}}"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{base_url}}/erp/take-control/whatsapp",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "erp",
+                                "take-control",
+                                "whatsapp"
+                            ]
+                        },
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"phone\": \"+59899000000\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        },
+                        "description": "Desactiva las respuestas automáticas del bot para ese número de WhatsApp. El operador puede responder manualmente."
+                    }
+                },
+                {
+                    "name": "Liberar control – WhatsApp",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "X-API-Key",
+                                "value": "{{api_key}}"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{base_url}}/erp/release-control/whatsapp",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "erp",
+                                "release-control",
+                                "whatsapp"
+                            ]
+                        },
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"phone\": \"+59899000000\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        },
+                        "description": "Reactiva las respuestas automáticas del bot para ese número."
+                    }
+                },
+                {
+                    "name": "Tomar control – Telegram",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "X-API-Key",
+                                "value": "{{api_key}}"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{base_url}}/erp/take-control/telegram",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "erp",
+                                "take-control",
+                                "telegram"
+                            ]
+                        },
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"chat_id\": \"987654321\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    }
+                },
+                {
+                    "name": "Liberar control – Telegram",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "X-API-Key",
+                                "value": "{{api_key}}"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{base_url}}/erp/release-control/telegram",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "erp",
+                                "release-control",
+                                "telegram"
+                            ]
+                        },
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"chat_id\": \"987654321\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        }
+                    }
+                }
+            ]
+        },
+        {
+            "name": "Agent Prompt",
+            "item": [
+                {
+                    "name": "Obtener prompt actual",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "X-API-Key",
+                                "value": "{{api_key}}"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{base_url}}/erp/prompt",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "erp",
+                                "prompt"
+                            ]
+                        },
+                        "description": "Devuelve el contenido actual de static/prompt.txt."
+                    }
+                },
+                {
+                    "name": "Actualizar prompt",
+                    "request": {
+                        "method": "PUT",
+                        "header": [
+                            {
+                                "key": "X-API-Key",
+                                "value": "{{api_key}}"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{base_url}}/erp/prompt",
+                            "host": [
+                                "{{base_url}}"
+                            ],
+                            "path": [
+                                "erp",
+                                "prompt"
+                            ]
+                        },
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n  \"prompt\": \"Eres un asistente de la Ruta del Queso...\"\n}",
+                            "options": {
+                                "raw": {
+                                    "language": "json"
+                                }
+                            }
+                        },
+                        "description": "Reemplaza el prompt del agente y reinicia el singleton. El siguiente mensaje usará el nuevo prompt."
+                    }
+                }
+            ]
+        }
+    ]
+}

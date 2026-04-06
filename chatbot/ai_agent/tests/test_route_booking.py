@@ -21,7 +21,6 @@ import pytest
 from pydantic_ai import RunContext
 from pydantic_ai.exceptions import ModelRetry
 
-from chatbot.ai_agent.context import WebhookContextManager
 from chatbot.ai_agent.dependencies import AgentDeps
 from chatbot.ai_agent.models import PendingRouteBooking, RouteBookingStatus
 from chatbot.ai_agent.tests.conftest import FakeWhatsAppClient, build_run_context
@@ -76,7 +75,6 @@ async def test_create_and_get_route_booking(
         erp_client=erp_client,
         db_services=None,  # type: ignore[arg-type]
         whatsapp_client=FakeWhatsAppClient(),  # type: ignore[arg-type]
-        webhook_context=WebhookContextManager(),
         user_phone="+598 99 000 000",
         user_name=None,
         contact_id=_TEST_CONTACT_ID,
@@ -94,7 +92,7 @@ async def test_create_and_get_route_booking(
 
     # -- Crear reserva de ruta ------------------------------------------------
     try:
-        booking = await create_route_reservation(
+        result = await create_route_reservation(
             ctx,
             route_id=_TEST_ROUTE_ID,
             date_from=available_date,
@@ -109,6 +107,11 @@ async def test_create_and_get_route_booking(
                 f"Detalle: {exc}"
             )
         raise
+
+    assert isinstance(result, PendingRouteBooking), (
+        f"Expected PendingRouteBooking, got: {result}"
+    )
+    booking = result
 
     print(f"  route_booking_id={booking.route_booking_id}")
     print(f"  status={booking.status}")
@@ -171,7 +174,6 @@ async def test_get_route_booking_status_existing(
         erp_client=erp_client,
         db_services=None,  # type: ignore[arg-type]
         whatsapp_client=FakeWhatsAppClient(),  # type: ignore[arg-type]
-        webhook_context=WebhookContextManager(),
         user_phone="+598 99 000 000",
         user_name=None,
         contact_id=_TEST_CONTACT_ID,

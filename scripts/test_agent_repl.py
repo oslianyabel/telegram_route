@@ -18,7 +18,6 @@ from pydantic_ai.messages import ModelMessage
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from chatbot.ai_agent.agent import get_cheese_agent
-from chatbot.ai_agent.context import WebhookContextManager
 from chatbot.ai_agent.dependencies import AgentDeps
 from chatbot.ai_agent.models import GoogleModel
 from chatbot.core.config import config
@@ -58,7 +57,6 @@ def _build_deps(erp_client: httpx.AsyncClient) -> AgentDeps:
         erp_client=erp_client,
         db_services=None,  # type: ignore[arg-type]
         whatsapp_client=FakeWhatsAppClient(),  # type: ignore[arg-type]
-        webhook_context=WebhookContextManager(),
         user_phone=TEST_PHONE,
         user_name="Test User",
     )

@@ -67,6 +67,8 @@ async def create_pending_reservation(
         raise ValueError("contact_id is required in AgentDeps to create a reservation")
     if not ctx.deps.user_name:
         return "Antes de crear la reserva necesito el nombre del cliente. Pídele su nombre al usuario y llama a update_contact con el valor obtenido."
+    if not ctx.deps.lead_id:
+        return "Antes de crear la reserva es necesario registrar el interés del cliente. Llama a upsert_lead primero y luego vuelve a llamar a create_pending_reservation."
     try:
         date.fromisoformat(selected_date)
     except ValueError as error:

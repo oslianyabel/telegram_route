@@ -194,5 +194,7 @@ async def upsert_lead(
     data: dict[str, Any] = extract_erp_data(response.json())
 
     lead = LeadInfo.model_validate(data)
+    if lead.lead_id:
+        ctx.deps.lead_id = lead.lead_id
     logger.info("Lead upserted: %s – status=%s", lead.lead_id, lead.status)
     return lead

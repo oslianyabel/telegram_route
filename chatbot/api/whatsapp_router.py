@@ -17,7 +17,6 @@ from pydantic_ai.messages import ModelResponse, ToolCallPart
 
 from chatbot.ai_agent import get_cheese_agent
 from chatbot.ai_agent.agent import FALLBACK_MODEL
-from chatbot.ai_agent.context import webhook_context_manager
 from chatbot.ai_agent.dependencies import AgentDeps
 from chatbot.ai_agent.error_agent import run_error_agent
 from chatbot.ai_agent.models import ERP_BASE_PATH, SurveyResult
@@ -575,7 +574,6 @@ async def _process_message(message: Message) -> None:
             erp_client=erp_client,
             db_services=services,
             whatsapp_client=whatsapp_manager,
-            webhook_context=webhook_context_manager,
             user_phone=user_number,
         )
 

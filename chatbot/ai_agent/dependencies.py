@@ -1,7 +1,7 @@
 """Dependency injection container for the AI agent.
 
 Provides all external services the agent needs: ERP client, DB services,
-WhatsApp client, and per-conversation webhook context.
+and WhatsApp client.
 """
 
 from __future__ import annotations
@@ -10,7 +10,6 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from chatbot.ai_agent.context import WebhookContextManager
 from chatbot.db.services import Services
 from chatbot.messaging.whatsapp import WhatsAppManager
 
@@ -22,7 +21,6 @@ class AgentDeps:
     erp_client: httpx.AsyncClient
     db_services: Services
     whatsapp_client: WhatsAppManager
-    webhook_context: WebhookContextManager
     user_phone: str = ""
     user_name: str | None = None
     user_email: str | None = None
@@ -33,3 +31,5 @@ class AgentDeps:
     called_tools: set[str] = field(default_factory=set)
     # Cache: True if the customer has at least one COMPLETED reservation (None = not yet checked)
     has_completed_reservations: bool | None = None
+    # Tracks the lead_id created/updated for this contact (required before creating a reservation)
+    lead_id: str | None = None

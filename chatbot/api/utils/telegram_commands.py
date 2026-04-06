@@ -44,7 +44,6 @@ from pydantic_ai.exceptions import ModelRetry
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from chatbot.ai_agent.context import webhook_context_manager
 from chatbot.ai_agent.dependencies import AgentDeps
 from chatbot.ai_agent.instructions import resolve_or_create_contact
 from chatbot.ai_agent.tools.booking import (
@@ -118,7 +117,6 @@ def _build_ctx(chat_id: str) -> RunContext[AgentDeps]:
         erp_client=_erp_client,
         db_services=services,
         whatsapp_client=_noop_whatsapp,
-        webhook_context=webhook_context_manager,
         user_phone=_phones_registry.get(chat_id, ""),
         telegram_id=chat_id,
     )

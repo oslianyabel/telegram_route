@@ -7,7 +7,6 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from chatbot.ai_agent.context import WebhookContextManager
 from chatbot.ai_agent.dependencies import AgentDeps
 from chatbot.ai_agent.tests.conftest import build_run_context
 from chatbot.ai_agent.tools.notifications import stop_lead_followups
@@ -200,7 +199,6 @@ async def test_stop_lead_followups_tool_persists_opt_out() -> None:
         erp_client=None,  # type: ignore[arg-type]
         db_services=fake_db,  # type: ignore[arg-type]
         whatsapp_client=None,  # type: ignore[arg-type]
-        webhook_context=WebhookContextManager(),
         user_phone="59812345678",
     )
     ctx = build_run_context(deps)

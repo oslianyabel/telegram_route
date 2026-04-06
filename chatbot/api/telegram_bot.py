@@ -33,7 +33,6 @@ from telegram.ext import (
 
 from chatbot.ai_agent import get_cheese_agent
 from chatbot.ai_agent.agent import FALLBACK_MODEL
-from chatbot.ai_agent.context import webhook_context_manager
 from chatbot.ai_agent.dependencies import AgentDeps
 from chatbot.ai_agent.error_agent import run_error_agent
 from chatbot.ai_agent.models import ERP_BASE_PATH, SurveyResult
@@ -852,7 +851,6 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 erp_client=erp_client,
                 db_services=services,
                 whatsapp_client=_noop_whatsapp,
-                webhook_context=webhook_context_manager,
                 user_phone=_user_phones.get(chat_id, ""),
                 telegram_id=chat_id,
             )

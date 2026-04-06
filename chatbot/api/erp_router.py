@@ -114,7 +114,7 @@ async def _get_contact_by_id(contact_id: str) -> ContactInfo:
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"ERP error al obtener contacto: {exc.response.status_code} — {exc.response.text}",
+            detail=f"ERP returned an error while fetching contact {contact_id}: {exc.response.status_code} — {exc.response.text}",
         ) from exc
     except httpx.RequestError as exc:
         logger.error(
@@ -124,14 +124,14 @@ async def _get_contact_by_id(contact_id: str) -> ContactInfo:
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="No se pudo conectar con el ERP",
+            detail="Could not connect to the ERP",
         ) from exc
 
     data: Any = extract_erp_data(response.json())
     if not data:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Contacto {contact_id} no encontrado en el ERP",
+            detail=f"Contact {contact_id} not found in the ERP",
         )
 
     contact = ContactInfo.model_validate(data)
@@ -160,7 +160,7 @@ async def _get_experience_detail(experience_id: str) -> dict[str, Any]:
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"ERP error al obtener experiencia: {exc.response.status_code} — {exc.response.text}",
+            detail=f"ERP returned an error while fetching experience {experience_id}: {exc.response.status_code} — {exc.response.text}",
         ) from exc
     except httpx.RequestError as exc:
         logger.error(
@@ -170,14 +170,14 @@ async def _get_experience_detail(experience_id: str) -> dict[str, Any]:
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="No se pudo conectar con el ERP",
+            detail="Could not connect to the ERP",
         ) from exc
 
     data: Any = extract_erp_data(response.json())
     if not data:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Experiencia {experience_id} no encontrada en el ERP",
+            detail=f"Experience {experience_id} not found in the ERP",
         )
 
     if isinstance(data, dict):
@@ -186,8 +186,7 @@ async def _get_experience_detail(experience_id: str) -> dict[str, Any]:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=(
-                    f"La experiencia recibida ({experience_id}) no coincide con la devuelta por el ERP "
-                    f"({returned_experience_id})"
+                    f"Experience ID mismatch: requested {experience_id} but ERP returned {returned_experience_id}"
                 ),
             )
 
@@ -213,7 +212,7 @@ async def _get_reservation_status(ticket_id: str) -> ReservationStatusDetail:
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"ERP error al obtener ticket: {exc.response.status_code} — {exc.response.text}",
+            detail=f"ERP returned an error while fetching ticket {ticket_id}: {exc.response.status_code} — {exc.response.text}",
         ) from exc
     except httpx.RequestError as exc:
         logger.error(
@@ -223,14 +222,14 @@ async def _get_reservation_status(ticket_id: str) -> ReservationStatusDetail:
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="No se pudo conectar con el ERP",
+            detail="Could not connect to the ERP",
         ) from exc
 
     data: Any = extract_erp_data(response.json())
     if not data:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Ticket {ticket_id} no encontrado en el ERP",
+            detail=f"Ticket {ticket_id} not found in the ERP",
         )
 
     return ReservationStatusDetail.model_validate(data)
@@ -287,8 +286,7 @@ def _validate_ticket_status_payload(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
-                f"El contacto devuelto por el ERP ({contact.contact_id}) no coincide con "
-                f"el contact_id recibido ({body.contact_id})"
+                f"Contact ID mismatch: ERP returned {contact.contact_id} but request specified {body.contact_id}"
             ),
         )
 
@@ -296,8 +294,7 @@ def _validate_ticket_status_payload(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
-                f"El ticket devuelto por el ERP ({ticket.ticket_id}) no coincide con "
-                f"el ticket_id recibido ({body.ticket_id})"
+                f"Ticket ID mismatch: ERP returned {ticket.ticket_id} but request specified {body.ticket_id}"
             ),
         )
 
@@ -305,7 +302,7 @@ def _validate_ticket_status_payload(
     if ticket_contact_id != body.contact_id:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"El ticket {body.ticket_id} no pertenece al contacto {body.contact_id}",
+            detail=f"Ticket {body.ticket_id} does not belong to contact {body.contact_id}",
         )
 
     ticket_status = _normalize_ticket_status(ticket.status)
@@ -314,8 +311,8 @@ def _validate_ticket_status_payload(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
-                f"El ticket {body.ticket_id} tiene estado {ticket.status or 'desconocido'} en el ERP "
-                f"y no coincide con el nuevo estado recibido ({body.new_status.value})"
+                f"Ticket {body.ticket_id} has status '{ticket.status or 'unknown'}' in the ERP, "
+                f"which does not match the requested new status '{body.new_status.value}'"
             ),
         )
 
@@ -330,8 +327,7 @@ def _validate_activity_completed_payload(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
-                f"El contacto devuelto por el ERP ({contact.contact_id}) no coincide con "
-                f"el contact_id recibido ({body.contact_id})"
+                f"Contact ID mismatch: ERP returned {contact.contact_id} but request specified {body.contact_id}"
             ),
         )
 
@@ -339,7 +335,7 @@ def _validate_activity_completed_payload(
     if ticket_contact_id != body.contact_id:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"El ticket {body.ticket_id} no pertenece al contacto {body.contact_id}",
+            detail=f"Ticket {body.ticket_id} does not belong to contact {body.contact_id}",
         )
 
     ticket_experience_id = (
@@ -349,7 +345,7 @@ def _validate_activity_completed_payload(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
-                f"El ticket {body.ticket_id} no corresponde a la experiencia {body.experience_id}"
+                f"Ticket {body.ticket_id} does not correspond to experience {body.experience_id}"
             ),
         )
 
@@ -357,14 +353,14 @@ def _validate_activity_completed_payload(
     if ticket_slot_id != body.slot_id:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"El ticket {body.ticket_id} no corresponde al slot {body.slot_id}",
+            detail=f"Ticket {body.ticket_id} does not correspond to slot {body.slot_id}",
         )
 
     slot_date_str = ticket.slot.date if ticket.slot else None
     if not slot_date_str:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"El slot {body.slot_id} no tiene una fecha válida en el ERP",
+            detail=f"Slot {body.slot_id} does not have a valid date in the ERP",
         )
 
     try:
@@ -372,15 +368,14 @@ def _validate_activity_completed_payload(
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Fecha de slot inválida recibida del ERP: {slot_date_str}",
+            detail=f"Invalid slot date received from the ERP: {slot_date_str}",
         ) from exc
 
     if slot_date > date.today():
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
-                f"El slot {body.slot_id} todavía no ocurrió; no se puede solicitar encuesta "
-                f"antes de la fecha {slot_date_str}"
+                f"Slot {body.slot_id} has not yet occurred; a survey cannot be requested before {slot_date_str}"
             ),
         )
 
@@ -394,8 +389,7 @@ def _build_activity_completed_request(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
-                f"El ticket {ticket.ticket_id} no contiene una experiencia válida "
-                "para disparar la encuesta"
+                f"Ticket {ticket.ticket_id} does not contain a valid experience to trigger the survey"
             ),
         )
 
@@ -404,8 +398,7 @@ def _build_activity_completed_request(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
-                f"El ticket {ticket.ticket_id} no contiene un slot válido "
-                "para disparar la encuesta"
+                f"Ticket {ticket.ticket_id} does not contain a valid slot to trigger the survey"
             ),
         )
 
@@ -431,7 +424,7 @@ async def _dispatch_activity_completed_survey(
     if not phone:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"El contacto {body.contact_id} no tiene teléfono registrado en el ERP",
+            detail=f"Contact {body.contact_id} does not have a phone number registered in the ERP",
         )
 
     if channel == "whatsapp":
@@ -440,8 +433,8 @@ async def _dispatch_activity_completed_survey(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=(
-                    f"No hay mensajes del usuario {phone} en la base de datos. "
-                    "La ventana de 24h de META no está activa."
+                    f"No messages from user {phone} found in the database. "
+                    "The META 24-hour messaging window is not active."
                 ),
             )
 
@@ -449,8 +442,8 @@ async def _dispatch_activity_completed_survey(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail=(
-                    f"La ventana de mensajes gratuitos de 24h de META para {phone} ha expirado. "
-                    "El último mensaje del usuario fue hace más de 24 horas."
+                    f"The META 24-hour free messaging window for {phone} has expired. "
+                    "The last user message was sent more than 24 hours ago."
                 ),
             )
 
@@ -465,7 +458,7 @@ async def _dispatch_activity_completed_survey(
             )
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Error al enviar la encuesta de satisfacción a {phone}",
+                detail=f"Failed to send the satisfaction survey to {phone}",
             )
 
         set_pending_survey(
@@ -484,7 +477,7 @@ async def _dispatch_activity_completed_survey(
         if not telegram_chat_id:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail="telegram_chat_id es obligatorio para enviar la encuesta por Telegram",
+                detail="telegram_chat_id is required to send the survey via Telegram",
             )
 
         ok = await send_telegram(chat_id=telegram_chat_id, text=SURVEY_MESSAGE)
@@ -495,7 +488,7 @@ async def _dispatch_activity_completed_survey(
             )
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Error al enviar la encuesta de satisfacción al chat {telegram_chat_id}",
+                detail=f"Failed to send the satisfaction survey to Telegram chat {telegram_chat_id}",
             )
 
         set_pending_survey(
@@ -512,7 +505,7 @@ async def _dispatch_activity_completed_survey(
 
     raise HTTPException(
         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-        detail=f"Canal de encuesta no soportado: {channel}",
+        detail=f"Unsupported survey channel: {channel}",
     )
 
 
@@ -606,7 +599,7 @@ async def send_whatsapp_message(body: ERPSendMessageRequest) -> dict[str, str]:
     if not contact.phone:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=f"El contacto {body.contact_id} no tiene teléfono registrado en el ERP",
+            detail=f"Contact {body.contact_id} does not have a phone number registered in the ERP",
         )
 
     phone = contact.phone
@@ -617,8 +610,8 @@ async def send_whatsapp_message(body: ERPSendMessageRequest) -> dict[str, str]:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
-                f"No hay mensajes del usuario {phone} en la base de datos. "
-                "La ventana de 24h de META no está activa."
+                f"No messages from user {phone} found in the database. "
+                "The META 24-hour messaging window is not active."
             ),
         )
 
@@ -626,8 +619,8 @@ async def send_whatsapp_message(body: ERPSendMessageRequest) -> dict[str, str]:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=(
-                f"La ventana de mensajes gratuitos de 24h de META para {phone} ha expirado. "
-                "El último mensaje del usuario fue hace más de 24 horas."
+                f"The META 24-hour free messaging window for {phone} has expired. "
+                "The last user message was sent more than 24 hours ago."
             ),
         )
 
@@ -637,7 +630,7 @@ async def send_whatsapp_message(body: ERPSendMessageRequest) -> dict[str, str]:
         logger.error("[send-whatsapp] Error enviando WhatsApp a %s", phone)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Error al enviar el mensaje de WhatsApp a {phone}",
+            detail=f"Failed to send WhatsApp message to {phone}",
         )
 
     logger.info("[send-whatsapp] Mensaje enviado a %s", phone)
@@ -661,7 +654,7 @@ async def send_telegram_message(body: ERPSendTelegramRequest) -> dict[str, str]:
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Error al enviar el mensaje de Telegram al chat {body.contact_id}",
+            detail=f"Failed to send Telegram message to chat {body.contact_id}",
         )
 
     logger.info("[send-telegram] Mensaje enviado a contact_id=%s", body.contact_id)
@@ -694,7 +687,7 @@ async def notify_ticket_status(body: ERPTicketStatusRequest) -> dict[str, str]:
     if not contact_in_ticket or not contact_in_ticket.phone:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"El ticket {body.ticket_id} no tiene teléfono registrado para el contacto",
+            detail=f"Ticket {body.ticket_id} does not have a phone number registered for the contact",
         )
 
     contact = ContactInfo(
@@ -716,8 +709,8 @@ async def notify_ticket_status(body: ERPTicketStatusRequest) -> dict[str, str]:
                     raise HTTPException(
                         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                         detail=(
-                            f"El ticket {body.ticket_id} corresponde a la fecha {slot_date_str}, "
-                            "que ya pasó. No se puede confirmar un ticket con fecha pasada."
+                            f"Ticket {body.ticket_id} is for date {slot_date_str}, which has already passed. "
+                            "Cannot confirm a ticket with a past date."
                         ),
                     )
             except ValueError:
@@ -734,7 +727,7 @@ async def notify_ticket_status(body: ERPTicketStatusRequest) -> dict[str, str]:
     if not messages:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=(f"No hay historial de mensajes del usuario {phone} con el bot"),
+            detail=(f"No message history found for user {phone} with the bot"),
         )
 
     channel = infer_channel(conversation_id=phone, messages=messages)
@@ -764,7 +757,7 @@ async def notify_ticket_status(body: ERPTicketStatusRequest) -> dict[str, str]:
             )
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"Error al enviar el mensaje de Telegram al chat {phone}",
+                detail=f"Failed to send Telegram notification for ticket {body.ticket_id} to chat {phone}",
             )
 
         logger.info(
@@ -787,12 +780,21 @@ async def notify_ticket_status(body: ERPTicketStatusRequest) -> dict[str, str]:
     # Canal WhatsApp: verificar ventana de 24h de META
     last_msg = await services.get_last_user_message(phone)
 
+    if last_msg is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=(
+                f"No messages from user {phone} found in the database. "
+                "The META 24-hour messaging window is not active."
+            ),
+        )
+
     if not _is_within_whatsapp_window(last_msg.created_at):  # type: ignore[attr-defined]
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
-                f"La ventana de mensajes gratuitos de 24h de META para {phone} ha expirado. "
-                "El último mensaje del usuario fue hace más de 24 horas."
+                f"The META 24-hour free messaging window for {phone} has expired. "
+                "The last user message was sent more than 24 hours ago."
             ),
         )
 
@@ -801,13 +803,13 @@ async def notify_ticket_status(body: ERPTicketStatusRequest) -> dict[str, str]:
         logger.error("[ticket-status] Error enviando WhatsApp a %s", phone)
         await notify_error(
             Exception(
-                f"Error al enviar notificación de ticket {body.ticket_id} a {phone}"
+                f"Failed to send WhatsApp notification for ticket {body.ticket_id} to {phone}"
             ),
             context=f"notify_ticket_status | contact_id={body.contact_id}",
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Error al enviar el mensaje de WhatsApp a {phone}",
+            detail=f"Failed to send WhatsApp notification for ticket {body.ticket_id} to {phone}",
         )
 
     logger.info(
@@ -913,7 +915,7 @@ async def get_agent_prompt() -> dict[str, str]:
     except FileNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Archivo de prompt no encontrado",
+            detail="Prompt file not found",
         ) from exc
     return {"prompt": content}
 
@@ -936,7 +938,7 @@ async def update_agent_prompt(
         logger.error("[update-prompt] Error escribiendo prompt: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error al escribir el archivo de prompt: {exc}",
+            detail=f"Failed to write the prompt file: {exc}",
         ) from exc
     reset_cheese_agent()
     logger.info("[update-prompt] Prompt actualizado y agente reiniciado")

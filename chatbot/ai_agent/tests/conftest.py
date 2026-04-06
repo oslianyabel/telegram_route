@@ -17,7 +17,6 @@ import httpx
 import pytest
 from pydantic_ai import RunContext
 
-from chatbot.ai_agent.context import WebhookContextManager
 from chatbot.ai_agent.dependencies import AgentDeps
 from chatbot.ai_agent.models import ERP_BASE_PATH
 from chatbot.erp.client import build_erp_client
@@ -84,7 +83,6 @@ def deps(erp_client: httpx.AsyncClient) -> AgentDeps:
         erp_client=erp_client,
         db_services=None,  # type: ignore[arg-type]
         whatsapp_client=FakeWhatsAppClient(),  # type: ignore[arg-type]
-        webhook_context=WebhookContextManager(),
         user_phone="+598 99 000 000",
         user_name=None,
         contact_id=None,
@@ -107,7 +105,6 @@ def ctx_factory(erp_client: httpx.AsyncClient) -> Callable[..., RunContext[Agent
             "erp_client": erp_client,
             "db_services": None,
             "whatsapp_client": FakeWhatsAppClient(),
-            "webhook_context": WebhookContextManager(),
             "user_phone": "+598 99 000 000",
             "user_name": None,
             "contact_id": None,
