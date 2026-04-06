@@ -599,13 +599,62 @@ async def cancel_route_booking(
         cancellation_reason: Reason provided by the user for the cancellation.
     """
     logger.info(
-        "[cancel_route_booking] route_booking_id=%s reason=%s — endpoint in maintenance",
+        "[cancel_route_booking] route_booking_id=%s reason=%s",
         route_booking_id,
         cancellation_reason,
     )
-    return (
-        "La cancelación de reservas de ruta no está disponible temporalmente por mantenimiento en el ERP. "
-        "Informá al usuario que puede comunicarse con el equipo de Ruta del Queso para gestionar la cancelación manualmente."
+
+    response = await ctx.deps.erp_client.post(
+        f"{ERP_BASE_PATH}.route_booking_controller.cancel_route_booking",
+        json={
+            "route_booking_id": route_booking_id,
+            "reason": cancellation_reason,
+        },
+        timeout=ERP_TIMEOUT_SECONDS,
+    )
+    resp_body: dict[str, Any] = response.json()
+
+    if response.is_error:
+        # Known ERP bug: the first call always raises a TimestampMismatchError /
+        # CharacterLengthExceededError, but the cancellation actually succeeds on
+        # the server. We detect these specific exceptions and treat them as success.
+        exc_type: str = resp_body.get("exc_type", "")
+        exception_text: str = resp_body.get("exception", "")
+        if (
+            "CharacterLengthExceededError" in exc_type
+            or "TimestampMismatchError" in exception_text
+        ):
+            logger.warning(
+                "[cancel_route_booking] Known ERP bug — cancellation succeeded despite error response (exc_type=%s)",
+                exc_type,
+            )
+            return f"La reserva de ruta {route_booking_id} fue cancelada exitosamente."
+
+        erp_message = extract_erp_error(resp_body)
+        logger.error(
+            "[cancel_route_booking] ERP error %s: %s",
+            response.status_code,
+            erp_message,
+        )
+        raise ModelRetry(
+            f"ERP rechazó la cancelación ({response.status_code}): {erp_message}."
+        )
+
+    wrapper: Any = resp_body.get("message", resp_body)
+    if isinstance(wrapper, dict):
+        data: Any = wrapper.get("data", {})
+        status: str = data.get("status", "") if isinstance(data, dict) else ""
+        if wrapper.get("success") or status == "CANCELLED":
+            logger.info(
+                "[cancel_route_booking] Route booking cancelled: %s (status=%s)",
+                route_booking_id,
+                status,
+            )
+            return f"La reserva de ruta {route_booking_id} fue cancelada exitosamente."
+
+    erp_message = extract_erp_error(resp_body)
+    raise ModelRetry(
+        f"Respuesta inesperada del ERP al cancelar la reserva: {erp_message}."
     )
 
 
@@ -696,11 +745,52 @@ async def confirm_route_modification(
         changes: List of ticket-level changes to apply.
     """
     logger.info(
-        "[confirm_route_modification] route_booking_id=%s changes=%s — endpoint in maintenance",
+        "[confirm_route_modification] route_booking_id=%s changes=%s",
         route_booking_id,
         changes,
     )
+
+    if not changes:
+        raise ModelRetry(
+            "At least one ticket change must be provided to confirm a route modification."
+        )
+
+    changes_payload = [
+        {k: v for k, v in c.model_dump().items() if v is not None} for c in changes
+    ]
+
+    response = await ctx.deps.erp_client.post(
+        f"{ERP_BASE_PATH}.route_booking_controller.confirm_route_modification",
+        json={
+            "route_booking_id": route_booking_id,
+            "changes": changes_payload,
+        },
+        timeout=ERP_TIMEOUT_SECONDS,
+    )
+    if response.is_error:
+        erp_message = extract_erp_error(response.json())
+        logger.error(
+            "[confirm_route_modification] ERP error %s: %s",
+            response.status_code,
+            erp_message,
+        )
+        raise ModelRetry(
+            f"ERP rechazó la modificación ({response.status_code}): {erp_message}."
+        )
+
+    data: dict[str, Any] = extract_erp_data(response.json())
+    modified_tickets: list[str] = data.get("modified_tickets", [])
+    updated_status: dict[str, Any] = data.get("updated_status", {})
+    new_status: str = updated_status.get("status", "")
+
+    logger.info(
+        "[confirm_route_modification] route_booking_id=%s modified_tickets=%s new_status=%s",
+        route_booking_id,
+        modified_tickets,
+        new_status,
+    )
     return (
-        "La modificación de reservas de ruta no está disponible temporalmente por mantenimiento en el ERP. "
-        "Informá al usuario que puede comunicarse con el equipo de Ruta del Queso para gestionar el cambio manualmente."
+        f"La reserva de ruta {route_booking_id} fue modificada exitosamente. "
+        f"Tickets actualizados: {', '.join(modified_tickets)}. "
+        f"Estado actual: {new_status}."
     )
