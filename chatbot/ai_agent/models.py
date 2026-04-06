@@ -642,6 +642,7 @@ class EstablishmentDetail(BaseModel):
     phone: str | None = None
     website: str | None = None
     description: str | None = None
+    administrator_contact: str | None = None
     address: str | None = None
     contacts: list[Any] = Field(default_factory=list)
     experiences: list[EstablishmentExperience] = Field(default_factory=list)

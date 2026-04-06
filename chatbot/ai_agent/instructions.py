@@ -184,7 +184,9 @@ async def get_pending_deposit_context(ctx: RunContext[AgentDeps]) -> str:
         "The customer has confirmed tickets with outstanding deposit payments:",
         *pending_deposits,
         "",
-        "Guide the customer to complete the deposit payment. "
-        "Once payment is confirmed, this context will no longer appear.",
+        "This is background context only. Do NOT proactively mention it unless the "
+        "customer asks about payments, their reservation status, or it is clearly "
+        "relevant to what they are asking. Respond naturally to whatever the customer "
+        "actually said first.",
     ]
     return "\n".join(lines)

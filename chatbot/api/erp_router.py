@@ -107,13 +107,14 @@ async def _get_contact_by_id(contact_id: str) -> ContactInfo:
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
         logger.error(
-            "[_get_contact_by_id] ERP HTTP error for contact_id=%s: %s",
+            "[_get_contact_by_id] ERP HTTP error for contact_id=%s: %s | body=%s",
             contact_id,
             exc,
+            exc.response.text,
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"ERP error al obtener contacto: {exc.response.status_code}",
+            detail=f"ERP error al obtener contacto: {exc.response.status_code} — {exc.response.text}",
         ) from exc
     except httpx.RequestError as exc:
         logger.error(
@@ -152,13 +153,14 @@ async def _get_experience_detail(experience_id: str) -> dict[str, Any]:
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
         logger.error(
-            "[_get_experience_detail] ERP HTTP error for experience_id=%s: %s",
+            "[_get_experience_detail] ERP HTTP error for experience_id=%s: %s | body=%s",
             experience_id,
             exc,
+            exc.response.text,
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"ERP error al obtener experiencia: {exc.response.status_code}",
+            detail=f"ERP error al obtener experiencia: {exc.response.status_code} — {exc.response.text}",
         ) from exc
     except httpx.RequestError as exc:
         logger.error(
@@ -204,13 +206,14 @@ async def _get_reservation_status(ticket_id: str) -> ReservationStatusDetail:
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
         logger.error(
-            "[_get_reservation_status] ERP HTTP error for ticket_id=%s: %s",
+            "[_get_reservation_status] ERP HTTP error for ticket_id=%s: %s | body=%s",
             ticket_id,
             exc,
+            exc.response.text,
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"ERP error al obtener ticket: {exc.response.status_code}",
+            detail=f"ERP error al obtener ticket: {exc.response.status_code} — {exc.response.text}",
         ) from exc
     except httpx.RequestError as exc:
         logger.error(
@@ -585,16 +588,16 @@ async def _send_payment_instructions(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/send-whatsapp", summary="Enviar mensaje de WhatsApp a un contacto")
+@router.post("/send-whatsapp", summary="Send a WhatsApp message to a contact")
 async def send_whatsapp_message(body: ERPSendMessageRequest) -> dict[str, str]:
-    """Recibe un contact_id y un mensaje, y lo envía por WhatsApp al contacto.
+    """Receives a contact_id and a message, and sends it via WhatsApp to the contact.
 
-    Verifica que el contacto tenga una ventana de conversación activa (24 h) en
-    META antes de enviar. Si la ventana está cerrada retorna un error 422.
+    Checks that the contact has an active 24-hour messaging window in META before
+    sending. Returns a 422 error if the window is closed.
 
     Body:
-        - contact_id: ID del contacto en el ERP.
-        - message: Texto a enviar por WhatsApp.
+        - contact_id: ERP contact ID.
+        - message: Text to send via WhatsApp.
     """
     logger.info("[send-whatsapp] contact_id=%s", body.contact_id)
 
@@ -641,13 +644,13 @@ async def send_whatsapp_message(body: ERPSendMessageRequest) -> dict[str, str]:
     return {"status": "ok", "phone": phone}
 
 
-@router.post("/send-telegram", summary="Enviar mensaje de Telegram a un usuario")
+@router.post("/send-telegram", summary="Send a Telegram message to a user")
 async def send_telegram_message(body: ERPSendTelegramRequest) -> dict[str, str]:
-    """Recibe un contact_id (Telegram chat ID) y un mensaje, y lo envía por Telegram.
+    """Receives a contact_id (Telegram chat ID) and a message, and sends it via Telegram.
 
     Body:
-        - contact_id: Telegram chat ID del destinatario.
-        - message: Texto a enviar por Telegram.
+        - contact_id: Telegram chat ID of the recipient.
+        - message: Text to send via Telegram.
     """
     logger.info("[send-telegram] contact_id=%s", body.contact_id)
 
@@ -665,15 +668,17 @@ async def send_telegram_message(body: ERPSendTelegramRequest) -> dict[str, str]:
     return {"status": "ok", "chat_id": body.contact_id}
 
 
-@router.post("/ticket-status", summary="Notificar al cliente el estado de su reserva")
+@router.post(
+    "/ticket-status", summary="Notify the customer about their reservation status"
+)
 async def notify_ticket_status(body: ERPTicketStatusRequest) -> dict[str, str]:
-    """Informa al cliente por WhatsApp cambios relevantes en el estado de su reserva.
+    """Notifies the customer via WhatsApp or Telegram about relevant changes to their reservation.
 
     Body:
-        - contact_id: ID del contacto en el ERP.
-        - ticket_id: ID del ticket afectado.
-        - new_status: Nuevo estado (confirmed | cancelled | no_show | rejected | expired | checked_in | completed).
-        - observations: Texto adicional opcional del operador.
+        - contact_id: ERP contact ID.
+        - ticket_id: ID of the affected ticket.
+        - new_status: New status (approved | cancelled | no_show | rejected | expired | checked_in | completed).
+        - observations: Optional additional notes from the operator.
     """
     logger.info(
         "[ticket-status] contact_id=%s ticket_id=%s new_status=%s",
@@ -682,15 +687,22 @@ async def notify_ticket_status(body: ERPTicketStatusRequest) -> dict[str, str]:
         body.new_status,
     )
 
-    # 1. Obtener teléfono del contacto
-    contact = await _get_contact_by_id(body.contact_id)
-    if not contact.phone:
+    # 1. Obtener datos del ticket (la respuesta ya incluye el contacto con su teléfono)
+    ticket = await _get_reservation_status(body.ticket_id)
+
+    contact_in_ticket = ticket.contact
+    if not contact_in_ticket or not contact_in_ticket.phone:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"El contacto {body.contact_id} no tiene teléfono registrado en el ERP",
+            detail=f"El ticket {body.ticket_id} no tiene teléfono registrado para el contacto",
         )
 
-    ticket = await _get_reservation_status(body.ticket_id)
+    contact = ContactInfo(
+        contact_id=contact_in_ticket.contact_id or body.contact_id,
+        phone=contact_in_ticket.phone,
+        name=contact_in_ticket.full_name,
+        email=contact_in_ticket.email,
+    )
     _validate_ticket_status_payload(body=body, contact=contact, ticket=ticket)
 
     # Validar que la fecha del ticket no esté en el pasado (solo para confirmaciones)
@@ -715,7 +727,7 @@ async def notify_ticket_status(body: ERPTicketStatusRequest) -> dict[str, str]:
                     slot_date_str,
                 )
 
-    phone = contact.phone
+    phone: str = contact_in_ticket.phone  # narrowed to str by the guard above
 
     # 2. Inferir canal de comunicación del contacto
     messages = await services.get_messages(phone)
@@ -823,16 +835,16 @@ async def notify_ticket_status(body: ERPTicketStatusRequest) -> dict[str, str]:
 
 @router.post(
     "/take-control/whatsapp",
-    summary="Tomar control de una conversación de WhatsApp",
+    summary="Take control of a WhatsApp conversation",
 )
 async def take_whatsapp_control(body: ERPWhatsAppControlRequest) -> dict[str, str]:
-    """Desactiva las respuestas automáticas del bot para el número de WhatsApp indicado.
+    """Disables automatic bot responses for the given WhatsApp number.
 
-    El operador podrá responder manualmente al cliente hasta que se llame
-    a /release-control/whatsapp con el mismo número.
+    The operator can reply manually until /release-control/whatsapp is called
+    with the same number.
 
     Body:
-        - phone: Número de WhatsApp del cliente (ej: +59899000000).
+        - phone: Customer's WhatsApp number (e.g. +59899000000).
     """
     logger.info("[take-control/whatsapp] phone=%s", body.phone)
     human_control.take_whatsapp_control(body.phone)
@@ -841,13 +853,13 @@ async def take_whatsapp_control(body: ERPWhatsAppControlRequest) -> dict[str, st
 
 @router.post(
     "/release-control/whatsapp",
-    summary="Ceder control de una conversación de WhatsApp al bot",
+    summary="Release control of a WhatsApp conversation back to the bot",
 )
 async def release_whatsapp_control(body: ERPWhatsAppControlRequest) -> dict[str, str]:
-    """Reactiva las respuestas automáticas del bot para el número de WhatsApp indicado.
+    """Re-enables automatic bot responses for the given WhatsApp number.
 
     Body:
-        - phone: Número de WhatsApp del cliente (ej: +59899000000).
+        - phone: Customer's WhatsApp number (e.g. +59899000000).
     """
     logger.info("[release-control/whatsapp] phone=%s", body.phone)
     human_control.release_whatsapp_control(body.phone)
@@ -856,16 +868,16 @@ async def release_whatsapp_control(body: ERPWhatsAppControlRequest) -> dict[str,
 
 @router.post(
     "/take-control/telegram",
-    summary="Tomar control de una conversación de Telegram",
+    summary="Take control of a Telegram conversation",
 )
 async def take_telegram_control(body: ERPTelegramControlRequest) -> dict[str, str]:
-    """Desactiva las respuestas automáticas del bot para el chat de Telegram indicado.
+    """Disables automatic bot responses for the given Telegram chat.
 
-    El operador podrá responder manualmente al cliente hasta que se llame
-    a /release-control/telegram con el mismo chat_id.
+    The operator can reply manually until /release-control/telegram is called
+    with the same chat_id.
 
     Body:
-        - chat_id: Telegram chat ID del cliente.
+        - chat_id: Customer's Telegram chat ID.
     """
     logger.info("[take-control/telegram] chat_id=%s", body.chat_id)
     human_control.take_telegram_control(body.chat_id)
@@ -874,13 +886,13 @@ async def take_telegram_control(body: ERPTelegramControlRequest) -> dict[str, st
 
 @router.post(
     "/release-control/telegram",
-    summary="Ceder control de una conversación de Telegram al bot",
+    summary="Release control of a Telegram conversation back to the bot",
 )
 async def release_telegram_control(body: ERPTelegramControlRequest) -> dict[str, str]:
-    """Reactiva las respuestas automáticas del bot para el chat de Telegram indicado.
+    """Re-enables automatic bot responses for the given Telegram chat.
 
     Body:
-        - chat_id: Telegram chat ID del cliente.
+        - chat_id: Customer's Telegram chat ID.
     """
     logger.info("[release-control/telegram] chat_id=%s", body.chat_id)
     human_control.release_telegram_control(body.chat_id)
@@ -892,9 +904,9 @@ async def release_telegram_control(body: ERPTelegramControlRequest) -> dict[str,
 # ---------------------------------------------------------------------------
 
 
-@router.get("/prompt", summary="Obtener el prompt del agente")
+@router.get("/prompt", summary="Get the agent prompt")
 async def get_agent_prompt() -> dict[str, str]:
-    """Devuelve el contenido actual del prompt del agente principal desde static/prompt.txt."""
+    """Returns the current content of the main agent prompt from static/prompt.txt."""
     logger.info("[get-prompt] Leyendo prompt desde %s", PROMPT_FILE)
     try:
         content = PROMPT_FILE.read_text(encoding="utf-8")
@@ -906,16 +918,16 @@ async def get_agent_prompt() -> dict[str, str]:
     return {"prompt": content}
 
 
-@router.put("/prompt", summary="Actualizar el prompt del agente")
+@router.put("/prompt", summary="Update the agent prompt")
 async def update_agent_prompt(
-    prompt: str = Body(..., embed=True, description="Nuevo contenido del prompt"),
+    prompt: str = Body(..., embed=True, description="New prompt content"),
 ) -> dict[str, str]:
-    """Reemplaza el contenido de static/prompt.txt y reinicia el singleton del agente.
+    """Replaces the content of static/prompt.txt and restarts the agent singleton.
 
-    El próximo mensaje procesado por el agente usará el nuevo prompt.
+    The next message processed by the agent will use the new prompt.
 
     Body:
-        - prompt: Texto completo del nuevo prompt.
+        - prompt: Full text of the new prompt.
     """
     logger.info("[update-prompt] Actualizando prompt (%d chars)", len(prompt))
     try:

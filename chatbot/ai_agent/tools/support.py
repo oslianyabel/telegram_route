@@ -50,6 +50,9 @@ async def create_complaint(
        Use complaint_type=Service for service issues, complaint_type=Staff for
        staff-related feedback, complaint_type=Product for product quality.
        Set incident_type=LOCAL.
+       If the complaint is related to a specific establishment, after creating
+       the complaint call get_establishment_details to check if
+       administrator_contact is available and direct the customer to that contact.
 
     4. CHATBOT COMMUNICATION PROBLEM — The customer reports that the assistant
        gave wrong information, failed to understand them, or behaved unexpectedly.
