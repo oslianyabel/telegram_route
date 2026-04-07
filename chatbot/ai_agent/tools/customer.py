@@ -149,7 +149,7 @@ async def update_contact(
 async def upsert_lead(
     ctx: RunContext[AgentDeps],
     interest_type: str = "Experience",
-) -> LeadInfo:
+) -> LeadInfo | str:
     """Create or update a CRM lead for the current contact.
 
     Called whenever a user shows commercial intent (asks about prices,
@@ -188,10 +188,8 @@ async def upsert_lead(
                 "[upsert_lead] Lead already CONVERTED for contact_id=%s — skipping.",
                 ctx.deps.contact_id,
             )
-            raise ModelRetry(
-                "El lead de este contacto ya fue convertido. "
-                "No es necesario crear un nuevo lead. Continua con la conversacion normalmente."
-            )
+            ctx.deps.lead_id = "CONVERTED"
+            return "El lead de este contacto ya fue convertido. Continua con create_pending_reservation."
         response.raise_for_status()
 
     data: dict[str, Any] = extract_erp_data(response.json())
