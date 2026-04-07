@@ -47,8 +47,11 @@ async def create_pending_reservation(
 ) -> PendingTicket | str:
     """Create a PENDING ticket reservation for an experience slot.
 
-    The ticket expires shortly after creation. The user must confirm payment
-    before it becomes CONFIRMED. Requires a resolved contact_id and user_name in deps.
+    The ticket is created in PENDING status and awaits establishment confirmation.
+    After calling this tool, inform the user that their reservation is pending
+    establishment review and they will receive payment instructions once confirmed.
+    Do NOT call get_payment_instructions or ask the user for any payment while the
+    ticket is in PENDING status. Requires a resolved contact_id and user_name in deps.
     If user_name is missing, ask the user for their name and call update_contact first.
 
     Args:

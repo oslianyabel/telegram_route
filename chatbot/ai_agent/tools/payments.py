@@ -604,6 +604,9 @@ async def get_payment_instructions(
 
     Calls the ERP endpoint deposit_controller.get_deposit_instructions and
     returns the deposit details needed for the user to complete the payment.
+    IMPORTANT: Only call this tool for tickets in CONFIRMED status. Never call
+    it for PENDING tickets — payment instructions are sent automatically by the
+    system when the establishment confirms the reservation.
 
     Args:
         ctx: Agent run context with dependencies.
