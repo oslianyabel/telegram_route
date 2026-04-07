@@ -76,3 +76,54 @@ async def test_get_customer_itinerary(monkeypatch):
     result = await get_customer_itinerary(ctx)  # type: ignore
     assert isinstance(result, CustomerItinerary)
     print("Itinerario obtenido:", result.model_dump_json(indent=2))
+
+
+def test_itinerary_individual_reservation_normalised():
+    """Reserva individual viene plana desde el ERP (sin lista 'reservations').
+    El model_validator debe normalizar el item para que reservations tenga 1 elemento."""
+    # uv run pytest -s chatbot/ai_agent/tests/test_itinerary.py::test_itinerary_individual_reservation_normalised
+    raw = {
+        "contact_id": "+5351054481",
+        "itinerary": [
+            {
+                "reservation_id": "TKT-2026-03-00053",
+                "type": "individual",
+                "experience_id": "EXP_CREMERIE",
+                "experience_name": "EXP_CREMERIE",
+                "date": "2026-05-10",
+                "time": "10:00",
+                "status": "CONFIRMED",
+                "party_size": 2,
+                "qr_status": None,
+                "checked_in": False,
+                "checked_in_at": None,
+                "deposit_status": None,
+                "deposit_paid": 0,
+                "deposit_required": 150,
+            }
+        ],
+        "total_reservations": 1,
+        "upcoming_count": 1,
+        "completed_count": 0,
+    }
+    itinerary = CustomerItinerary.model_validate(raw)
+
+    assert len(itinerary.itinerary) == 1
+    item = itinerary.itinerary[0]
+    assert len(item.reservations) == 1, (
+        "La reserva individual debe estar en item.reservations"
+    )
+
+    res = item.reservations[0]
+    assert res.reservation_id == "TKT-2026-03-00053"
+    assert res.status == "CONFIRMED"
+
+    # Simula la lógica de user_has_pending_deposit
+    confirmed_ids = [
+        r.reservation_id
+        for i in itinerary.itinerary
+        for r in i.reservations
+        if r.status.lower() == "confirmed"
+    ]
+    assert confirmed_ids == ["TKT-2026-03-00053"], "Debe detectar el ticket CONFIRMED"
+    print("confirmed_ids:", confirmed_ids)

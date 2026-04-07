@@ -1329,13 +1329,52 @@ class ReservationBrief(BaseModel):
 
 
 class ItineraryItem(BaseModel):
-    """A route or standalone experience in the customer's itinerary."""
+    """A route or standalone experience in the customer's itinerary.
+
+    The ERP returns two layouts:
+    - Route items: ``type="route"`` with a nested ``reservations`` list.
+    - Individual items: the reservation fields are at the top level (no
+      ``reservations`` list). The ``model_validator`` below normalises both
+      layouts so callers can always iterate ``item.reservations``.
+    """
 
     type: str
     route_id: str | None = None
     route_name: str | None = None
     reservations: list[ReservationBrief] = Field(default_factory=list)
     reservations_count: int = 0
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalise_individual_reservation(cls, data: object) -> object:
+        """If the item IS a reservation (has ``reservation_id`` at root), wrap it."""
+        if not isinstance(data, dict):
+            return data
+        if "reservation_id" not in data:
+            return data
+        # Build a ReservationBrief-compatible dict from the top-level fields.
+        brief_fields = {
+            "reservation_id",
+            "type",
+            "experience_id",
+            "experience_name",
+            "date",
+            "time",
+            "status",
+            "party_size",
+            "qr_status",
+            "checked_in",
+            "checked_in_at",
+            "deposit_status",
+            "deposit_paid",
+            "deposit_required",
+        }
+        brief = {k: v for k, v in data.items() if k in brief_fields}
+        return {
+            "type": data.get("type", "individual"),
+            "reservations": [brief],
+            "reservations_count": 1,
+        }
 
 
 class CustomerItinerary(BaseModel):
