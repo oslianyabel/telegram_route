@@ -551,11 +551,16 @@ async def validate_ocr_against_bank_account(
 
         complete_entries += 1
         bank_match = receipt_bank in entry_bank or entry_bank in receipt_bank
-        # receipt `account` may contain account_number or IBAN
+        # Normalise account strings removing all whitespace before comparing so
+        # cosmetic differences like "suc. 26" vs "suc.26" don't cause false mismatches.
+        receipt_account_norm = re.sub(r"\s+", "", receipt_account).lower()
         account_match = (
             not entry_account
-            or receipt_account == entry_account
-            or (entry_iban and receipt_account == entry_iban)
+            or receipt_account_norm == re.sub(r"\s+", "", entry_account).lower()
+            or (
+                entry_iban
+                and receipt_account_norm == re.sub(r"\s+", "", entry_iban).lower()
+            )
         )
         currency_match = not entry_currency or receipt_currency == entry_currency
 
