@@ -28,6 +28,18 @@ logger = logging.getLogger(__name__)
 ERP_TIMEOUT_SECONDS = 15.0
 
 
+async def _ensure_lead(
+    ctx: RunContext[AgentDeps], interest_type: str = "Experience"
+) -> None:
+    """Call upsert_lead if no lead has been recorded yet for this contact."""
+    if ctx.deps.lead_id is None and ctx.deps.contact_id:
+        from chatbot.ai_agent.tools.customer import (
+            upsert_lead,  # local import avoids circular dependency
+        )
+
+        await upsert_lead(ctx, interest_type=interest_type)
+
+
 # ------------------------------------------------------------------
 # Experiences
 # ------------------------------------------------------------------
@@ -63,6 +75,7 @@ async def list_experiences(
         date,
         establishment_id,
     )
+    await _ensure_lead(ctx, interest_type="Experience")
     payload: dict[str, Any] = {
         "page": page,
         "page_size": page_size,
@@ -103,6 +116,7 @@ async def get_experience_detail(
         experience_id: ERP id/name of the experience.
     """
     logger.info("[get_experience_detail] experience_id=%s", experience_id)
+    await _ensure_lead(ctx, interest_type="Experience")
     response = await ctx.deps.erp_client.post(
         f"{ERP_BASE_PATH}.experience_controller.get_experience_detail",
         json={"experience_id": experience_id, "include_next_availability": True},
@@ -131,6 +145,7 @@ async def list_routes(
     """
     ctx.deps.called_tools.add("list_routes")
     logger.info("[list_routes] page=%s page_size=%s", page, page_size)
+    await _ensure_lead(ctx, interest_type="Route")
     payload: dict[str, Any] = {
         "page": page,
         "page_size": page_size,
@@ -158,6 +173,7 @@ async def get_route_detail(
         route_id: ERP id/name of the route.
     """
     logger.info("[get_route_detail] route_id=%s", route_id)
+    await _ensure_lead(ctx, interest_type="Route")
     response = await ctx.deps.erp_client.post(
         f"{ERP_BASE_PATH}.route_controller.get_route_detail",
         json={"route_id": route_id},
@@ -185,6 +201,7 @@ async def list_establishments(
         page_size: Items per page.
     """
     logger.info("[list_establishments] page=%s page_size=%s", page, page_size)
+    await _ensure_lead(ctx, interest_type="Experience")
     response = await ctx.deps.erp_client.post(
         f"{ERP_BASE_PATH}.establishment_controller.list_establishments",
         json={"page": page, "page_size": page_size},
@@ -206,6 +223,7 @@ async def get_establishment_details(
         establishment_id: ERP id of the establishment.
     """
     logger.info("[get_establishment_details] establishment_id=%s", establishment_id)
+    await _ensure_lead(ctx, interest_type="Experience")
     response = await ctx.deps.erp_client.post(
         f"{ERP_BASE_PATH}.establishment_controller.get_establishment_details",
         json={"company_id": establishment_id},
@@ -240,6 +258,7 @@ async def get_availability(
         date_from,
         date_to,
     )
+    await _ensure_lead(ctx, interest_type="Experience")
     payload: dict[str, Any] = {
         "experience_id": experience_id,
         "date_from": date_from,
@@ -279,6 +298,7 @@ async def list_experiences_by_availability(
         date_from,
         date_to,
     )
+    await _ensure_lead(ctx, interest_type="Experience")
     response = await ctx.deps.erp_client.post(
         f"{ERP_BASE_PATH}.availability_controller.get_availability",
         json={"date_from": date_from, "date_to": date_to},
@@ -313,6 +333,7 @@ async def get_route_availability(
         date,
         party_size,
     )
+    await _ensure_lead(ctx, interest_type="Route")
     response = await ctx.deps.erp_client.post(
         f"{ERP_BASE_PATH}.availability_controller.get_route_availability",
         json={
