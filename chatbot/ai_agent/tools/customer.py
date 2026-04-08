@@ -228,7 +228,21 @@ async def upsert_lead(
             )
             ctx.deps.lead_id = "CONVERTED"
             return "El lead de este contacto ya fue convertido. Continua con create_pending_reservation."
-        response.raise_for_status()
+        # A 422 that is not CONVERTED is likely a race condition: two concurrent calls
+        # hit the ERP simultaneously for the same contact (e.g. _ensure_lead inside a
+        # catalog tool running in parallel with an explicit upsert_lead call by the model).
+        # One call succeeds and sets ctx.deps.lead_id; the other gets a constraint error.
+        # Treating this as non-fatal keeps the agent running correctly.
+        logger.warning(
+            "[upsert_lead] unexpected ERP %s for contact_id=%s — likely a concurrent call, treating as non-fatal. msg=%s",
+            response.status_code,
+            ctx.deps.contact_id,
+            error_msg,
+        )
+        return (
+            f"A lead already exists or was just created for contact {ctx.deps.contact_id}. "
+            "Continue with the next step."
+        )
 
     data: dict[str, Any] = extract_erp_data(response.json())
 

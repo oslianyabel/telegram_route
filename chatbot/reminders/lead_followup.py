@@ -334,8 +334,8 @@ async def _fetch_experience_availability(
     response = await erp_client.post(
         f"{ERP_BASE_PATH}.availability_controller.get_availability",
         json={
-            "date_from": start_date.strftime("%d-%m-%Y"),
-            "date_to": end_date.strftime("%d-%m-%Y"),
+            "date_from": start_date.isoformat(),
+            "date_to": end_date.isoformat(),
         },
         timeout=ERP_TIMEOUT_SECONDS,
     )
