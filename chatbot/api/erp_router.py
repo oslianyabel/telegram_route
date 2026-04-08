@@ -700,6 +700,7 @@ async def notify_ticket_status(body: ERPTicketStatusRequest) -> dict[str, str]:
 
     # Validar que la fecha del ticket no esté en el pasado (solo para confirmaciones)
     slot_date: date | None = None
+    slot_time: str | None = ticket.slot.time if ticket.slot else None
     if body.new_status == TicketDecision.APPROVED:
         slot_date_str = ticket.slot.date if ticket.slot else None
         if slot_date_str:
@@ -772,7 +773,10 @@ async def notify_ticket_status(body: ERPTicketStatusRequest) -> dict[str, str]:
                 phone=phone, ticket_id=body.ticket_id, channel=CHANNEL_TELEGRAM
             )
             await services.register_confirmed_ticket(
-                ticket_id=body.ticket_id, phone=phone, ticket_date=slot_date
+                ticket_id=body.ticket_id,
+                phone=phone,
+                ticket_date=slot_date,
+                slot_time=slot_time,
             )
 
         return {"status": "ok", "chat_id": phone}
@@ -824,7 +828,10 @@ async def notify_ticket_status(body: ERPTicketStatusRequest) -> dict[str, str]:
     if body.new_status == TicketDecision.APPROVED:
         await _send_payment_instructions(phone=phone, ticket_id=body.ticket_id)
         await services.register_confirmed_ticket(
-            ticket_id=body.ticket_id, phone=phone, ticket_date=slot_date
+            ticket_id=body.ticket_id,
+            phone=phone,
+            ticket_date=slot_date,
+            slot_time=slot_time,
         )
 
     return {"status": "ok", "phone": phone}

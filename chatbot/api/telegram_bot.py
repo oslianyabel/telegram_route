@@ -546,11 +546,34 @@ async def _handle_restart(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not update.message or not update.effective_chat:
         return
     chat_id = str(update.effective_chat.id)
+    _pending_receipt.pop(chat_id, None)
     await services.reset_chat(chat_id)
     await update.message.reply_text(
         "Chat restarted. How can I help you?", do_quote=True
     )
     logger.info("'/restart' requested by telegram_id=%s", chat_id)
+
+
+async def _handle_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/cancelar clears any pending payment receipt state."""
+    if not update.message or not update.effective_chat:
+        return
+    chat_id = str(update.effective_chat.id)
+    had_pending = _pending_receipt.pop(chat_id, None) is not None
+    if had_pending:
+        await update.message.reply_text(
+            "Payment registration cancelled. What else can I help you with?",
+            do_quote=True,
+        )
+        logger.info("'/cancelar' cleared pending receipt for telegram_id=%s", chat_id)
+    else:
+        await update.message.reply_text(
+            "There is nothing to cancel right now.",
+            do_quote=True,
+        )
+        logger.info(
+            "'/cancelar' requested with no pending state for telegram_id=%s", chat_id
+        )
 
 
 async def _handle_image(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -806,22 +829,16 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     )
                 finally:
                     typing_task.cancel()
-            else:
-                # Allow the user to cancel and return to normal conversation
-                if incoming_msg.strip().lower() in {"/cancelar", "/cancel", "/restart"}:
-                    _pending_receipt.pop(chat_id, None)
-                    await update.message.reply_text(
-                        "Payment registration cancelled. What else can I help you with?",
-                        do_quote=True,
-                    )
-                else:
-                    await update.message.reply_text(
-                        "I couldn't find a ticket number in your message. "
-                        "Please send the ticket number (for example: TKT-2026-03-00018) "
-                        "or type /cancelar to cancel the payment registration:",
-                        do_quote=True,
-                    )
-            return
+                return
+
+            # No ticket_id found — clear pending state and let message
+            # fall through to the main AI agent (spec requirement).
+            _pending_receipt.pop(chat_id, None)
+            logger.info(
+                "[receipt] No ticket_id in message for telegram_id=%s — "
+                "clearing pending receipt and passing to AI agent",
+                chat_id,
+            )
 
         logger.info("=" * 80)
         logger.info("telegram_id=%s: %s", chat_id, incoming_msg)
@@ -1042,6 +1059,8 @@ def build_application() -> Application:
 
     app.add_handler(CommandHandler("start", _handle_start))
     app.add_handler(CommandHandler("restart", _handle_restart))
+    app.add_handler(CommandHandler("cancelar", _handle_cancel))
+    app.add_handler(CommandHandler("cancel", _handle_cancel))
     app.add_handler(CommandHandler("change_phone", _handle_change_phone))
     app.add_handler(CommandHandler("get_phone", cmd_get_phone))
     app.add_handler(

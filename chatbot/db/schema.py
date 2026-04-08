@@ -47,6 +47,10 @@ deposit_reminders_table = sqlalchemy.Table(
     sqlalchemy.Column("reminded_at", DateTime, nullable=True),
     sqlalchemy.Column("reminder_count", Integer, default=0, server_default="0"),
     sqlalchemy.Column("ticket_date", DateTime, nullable=True),
+    sqlalchemy.Column("slot_time", String, nullable=True),
+    sqlalchemy.Column(
+        "event_notified", Boolean, nullable=False, server_default=sqlalchemy.false()
+    ),
 )
 
 # Database connection retry settings

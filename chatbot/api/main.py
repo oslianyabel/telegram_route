@@ -16,6 +16,7 @@ from chatbot.core.logging_conf import init_logging
 from chatbot.core.sentry import init_sentry
 from chatbot.db.services import services
 from chatbot.reminders.deposit_reminder import deposit_reminder_worker
+from chatbot.reminders.event_reminder import event_reminder_worker
 from chatbot.reminders.lead_followup import lead_followup_worker
 
 init_logging()
@@ -38,15 +39,21 @@ async def lifespan(app: FastAPI):
     deposit_reminder_task: Task[None] = create_task(
         deposit_reminder_worker(db_services=services, erp_client=erp_client)
     )
+    event_reminder_task: Task[None] = create_task(
+        event_reminder_worker(db_services=services)
+    )
 
     yield
 
     followup_task.cancel()
     deposit_reminder_task.cancel()
+    event_reminder_task.cancel()
     with suppress(CancelledError):
         await followup_task
     with suppress(CancelledError):
         await deposit_reminder_task
+    with suppress(CancelledError):
+        await event_reminder_task
 
     try:
         await services.database.disconnect()

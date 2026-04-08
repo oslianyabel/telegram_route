@@ -10,6 +10,7 @@ import logging
 import re
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 import httpx
 from pydantic_ai import ModelRetry, RunContext
@@ -212,7 +213,34 @@ async def register_deposit_payment(
         )
 
     if response.is_error:
-        error_msg = extract_erp_error(response.json())
+        # Some ERP versions return 4xx when a secondary operation fails (e.g.
+        # QR generation) even though the deposit itself was recorded. Treat the
+        # response as successful if the body indicates success=true and includes
+        # the deposit data we need.
+        body_json: dict[str, Any] = {}
+        try:
+            body_json = response.json()
+        except Exception:
+            pass
+
+        message_block = (
+            body_json.get("message", {}) if isinstance(body_json, dict) else {}
+        )
+        if (
+            isinstance(message_block, dict)
+            and message_block.get("success") is True
+            and message_block.get("data")
+        ):
+            logger.warning(
+                "[register_deposit_payment] ERP returned status=%s but body shows success=true — treating as success. "
+                "Server messages: %s",
+                response.status_code,
+                body_json.get("_server_messages", ""),
+            )
+            data = message_block["data"]
+            return DepositPaymentResult.model_validate(data)
+
+        error_msg = extract_erp_error(body_json) if body_json else response.text
         logger.error(
             "[register_deposit_payment] ERP error response status=%s body=%s",
             response.status_code,

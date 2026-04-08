@@ -30,15 +30,32 @@ def _tool_row(tool_names: list[str], created_at: datetime) -> FakeMessageRow:
     )
 
 
-def test_followup_is_sent_after_12h_without_reservation() -> None:
+def test_followup_is_not_sent_before_4h_threshold() -> None:
     now = datetime.now(tz=UTC)
     rows = [
         FakeMessageRow(
             role="user",
             message="Usuario - Quiero saber mas",
-            created_at=now - timedelta(hours=13),
+            created_at=now - timedelta(hours=3),
         ),
-        _tool_row(["upsert_lead"], now - timedelta(hours=13)),
+        _tool_row(["upsert_lead"], now - timedelta(hours=3)),
+    ]
+
+    decision = evaluate_follow_up_eligibility(rows, now=now)
+
+    assert decision.should_send is False
+    assert decision.reason == "initial_delay_not_elapsed"
+
+
+def test_followup_is_sent_after_4h_without_reservation() -> None:
+    now = datetime.now(tz=UTC)
+    rows = [
+        FakeMessageRow(
+            role="user",
+            message="Usuario - Quiero saber mas",
+            created_at=now - timedelta(hours=5),
+        ),
+        _tool_row(["upsert_lead"], now - timedelta(hours=5)),
     ]
 
     decision = evaluate_follow_up_eligibility(rows, now=now)

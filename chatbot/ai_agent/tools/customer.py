@@ -47,6 +47,11 @@ def _is_duplicate_contact_name_error(error_message: str) -> bool:
     )
 
 
+def _is_contact_already_exists_error(error_message: str) -> bool:
+    """Detect the ERP error when updating with data that already belongs to the contact."""
+    return "contact with this phone or email already exists" in error_message.lower()
+
+
 # ------------------------------------------------------------------
 # 1. Contact (contact_controller) – tools
 # ------------------------------------------------------------------
@@ -115,7 +120,40 @@ async def update_contact(
                 "If you also need to save email or preferred_language, "
                 "do it in a separate call without sending name."
             )
-    response.raise_for_status()
+        if _is_contact_already_exists_error(error_message):
+            logger.info(
+                "[update_contact] contact already has this data contact_id=%s email=%s",
+                ctx.deps.contact_id,
+                email,
+            )
+            # Sync deps so future calls skip the duplicate field
+            if email:
+                ctx.deps.user_email = email
+            remaining_payload: dict[str, Any] = {"contact_id": ctx.deps.contact_id}
+            if "preferred_language" in payload:
+                remaining_payload["preferred_language"] = payload["preferred_language"]
+            if "name" in payload:
+                remaining_payload["name"] = payload["name"]
+            if len(remaining_payload) > 1:
+                retry_response = await ctx.deps.erp_client.post(
+                    f"{ERP_BASE_PATH}.contact_controller.update_contact",
+                    json=remaining_payload,
+                    timeout=ERP_TIMEOUT_SECONDS,
+                )
+                if retry_response.is_success:
+                    data: dict[str, Any] = extract_erp_data(retry_response.json())
+                    return UpdateContactResult.model_validate(data)
+            return "The contact data is already up to date in the ERP. No changes were needed."
+        logger.error(
+            "[update_contact] ERP error contact_id=%s status=%s body=%s",
+            ctx.deps.contact_id,
+            response.status_code,
+            response.text[:300],
+        )
+        return (
+            f"The ERP returned a {response.status_code} error when updating the contact. "
+            "Inform the user that there was a temporary technical issue and ask them to try again in a few minutes."
+        )
     data: dict[str, Any] = extract_erp_data(response.json())
     result = UpdateContactResult.model_validate(data)
 

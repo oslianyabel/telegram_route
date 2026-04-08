@@ -317,6 +317,7 @@ class Services:
         ticket_id: str,
         phone: str,
         ticket_date: date | None = None,
+        slot_time: str | None = None,
     ) -> None:
         """Registra un ticket confirmado para el seguimiento del recordatorio de seña.
 
@@ -342,13 +343,16 @@ class Services:
             reminded_at=None,
             reminder_count=0,
             ticket_date=ticket_date_dt,
+            slot_time=slot_time,
+            event_notified=False,
         )
         await self.database.execute(query)
         logger.info(
-            "[deposit_reminders] Ticket registrado para recordatorio: ticket_id=%s phone=%s ticket_date=%s",
+            "[deposit_reminders] Ticket registrado para recordatorio: ticket_id=%s phone=%s ticket_date=%s slot_time=%s",
             ticket_id,
             phone,
             ticket_date,
+            slot_time,
         )
 
     async def get_pending_deposit_reminders(self, cutoff: datetime) -> list:
@@ -407,6 +411,37 @@ class Services:
         await self.database.execute(query)
         logger.info(
             "[deposit_reminders] Ticket marcado como pagado (reminder_count=3): ticket_id=%s",
+            ticket_id,
+        )
+
+    async def get_pending_event_reminders(
+        self, today_start: datetime, today_end: datetime
+    ) -> list:
+        """Devuelve tickets confirmados cuya fecha es hoy y aún no han sido notificados del evento.
+
+        Args:
+            today_start: Inicio del día actual (00:00:00).
+            today_end: Fin del día actual (23:59:59).
+        """
+        query = (
+            deposit_reminders_table.select()
+            .where(deposit_reminders_table.c.event_notified.is_(False))
+            .where(deposit_reminders_table.c.ticket_date >= today_start)
+            .where(deposit_reminders_table.c.ticket_date <= today_end)
+            .where(deposit_reminders_table.c.slot_time.isnot(None))
+        )
+        return await self.database.fetch_all(query)
+
+    async def mark_event_notified(self, ticket_id: str) -> None:
+        """Marca un ticket como notificado del evento próximo."""
+        query = (
+            deposit_reminders_table.update()
+            .where(deposit_reminders_table.c.ticket_id == ticket_id)
+            .values(event_notified=True)
+        )
+        await self.database.execute(query)
+        logger.info(
+            "[event_reminder] Ticket marcado como notificado: ticket_id=%s",
             ticket_id,
         )
 
