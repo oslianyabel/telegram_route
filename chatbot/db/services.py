@@ -579,14 +579,17 @@ class Services:
                         )
                     ).label("last_user_at"),
                     sqlalchemy.func.sum(
-                        sqlalchemy.case(
-                            (
-                                message_table.c.tools_used.contains(
-                                    '"lead_followup_reminder"'
+                        sqlalchemy.cast(
+                            sqlalchemy.case(
+                                (
+                                    message_table.c.tools_used.contains(
+                                        '"lead_followup_reminder"'
+                                    ),
+                                    1,
                                 ),
-                                1,
+                                else_=0,
                             ),
-                            else_=0,
+                            sqlalchemy.Integer,
                         )
                     ).label("followup_count"),
                 )
