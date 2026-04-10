@@ -14,6 +14,7 @@ from chatbot.reminders.lead_followup import (
     FOLLOW_UP_OPTOUT_MARKER,
     infer_channel,
 )
+from chatbot.reminders.utils import parse_slot_time
 
 logger = logging.getLogger(__name__)
 
@@ -25,16 +26,6 @@ _EVENT_REMINDER_MESSAGE: str = (
     "Your reservation *{ticket_id}* is scheduled for today at *{slot_time}*.\n\n"
     "We look forward to seeing you! 🧀"
 )
-
-
-def _parse_slot_time(raw: str) -> time | None:
-    """Parsea el horario del slot desde el formato del ERP (ej: '9:00:00')."""
-    for fmt in ("%H:%M:%S", "%H:%M"):
-        try:
-            return datetime.strptime(raw, fmt).time()
-        except ValueError:
-            continue
-    return None
 
 
 def _is_within_reminder_window(slot_time: time, now: datetime) -> bool:
@@ -73,7 +64,7 @@ async def process_pending_event_reminders(db_services: Services) -> None:
         if not raw_slot_time:
             continue
 
-        parsed_time: time | None = _parse_slot_time(raw_slot_time)
+        parsed_time: time | None = parse_slot_time(raw_slot_time)
         if parsed_time is None:
             logger.warning(
                 "[event_reminder] slot_time inválido para ticket=%s: %s",

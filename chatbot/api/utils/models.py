@@ -1,4 +1,5 @@
 from datetime import datetime
+from enum import Enum
 
 from pydantic import BaseModel, ConfigDict, EmailStr
 
@@ -37,5 +38,27 @@ class Statistics(BaseModel):
     returns_management: bool | None = None
     error_ocurred: bool | None = None
     created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ReminderType(str, Enum):
+    deposit = "deposit"
+    event = "event"
+    lead_followup = "lead_followup"
+
+
+class ReminderStatus(str, Enum):
+    pending = "pending"
+    done = "done"
+
+
+class ReminderItem(BaseModel):
+    phone: str
+    name: str | None = None
+    reminder_type: ReminderType
+    status: ReminderStatus
+    scheduled_at: datetime | None = None
+    ticket_id: str | None = None
 
     model_config = ConfigDict(from_attributes=True)

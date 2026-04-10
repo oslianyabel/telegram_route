@@ -445,6 +445,190 @@ class Services:
             ticket_id,
         )
 
+    async def get_deposit_reminders_by_status(self, status: str) -> list:
+        """Devuelve recordatorios de seña filtrados por estado con nombre del cliente.
+
+        Args:
+            status: 'pending' (reminder_count < 3) o 'done' (reminder_count >= 3).
+        """
+        query = sqlalchemy.select(
+            deposit_reminders_table.c.ticket_id,
+            deposit_reminders_table.c.phone,
+            deposit_reminders_table.c.confirmed_at,
+            deposit_reminders_table.c.reminded_at,
+            deposit_reminders_table.c.reminder_count,
+            deposit_reminders_table.c.ticket_date,
+            deposit_reminders_table.c.slot_time,
+            users_table.c.name,
+        ).select_from(
+            deposit_reminders_table.outerjoin(
+                users_table,
+                deposit_reminders_table.c.phone == users_table.c.phone,
+            )
+        )
+        if status == "pending":
+            query = query.where(deposit_reminders_table.c.reminder_count < 3)
+        else:
+            query = query.where(deposit_reminders_table.c.reminder_count >= 3)
+        if self.debug:
+            logger.debug(query)
+        return await self.database.fetch_all(query)
+
+    async def get_event_reminders_by_status(self, status: str) -> list:
+        """Devuelve recordatorios de evento filtrados por estado con nombre del cliente.
+
+        Args:
+            status: 'pending' (event_notified=false) o 'done' (event_notified=true).
+        """
+        is_done: bool = status == "done"
+        query = (
+            sqlalchemy.select(
+                deposit_reminders_table.c.ticket_id,
+                deposit_reminders_table.c.phone,
+                deposit_reminders_table.c.ticket_date,
+                deposit_reminders_table.c.slot_time,
+                deposit_reminders_table.c.event_notified,
+                users_table.c.name,
+            )
+            .select_from(
+                deposit_reminders_table.outerjoin(
+                    users_table,
+                    deposit_reminders_table.c.phone == users_table.c.phone,
+                )
+            )
+            .where(deposit_reminders_table.c.event_notified.is_(is_done))
+        )
+        if self.debug:
+            logger.debug(query)
+        return await self.database.fetch_all(query)
+
+    async def get_lead_followup_reminders_by_status(self, status: str) -> list:
+        """Devuelve recordatorios de lead follow-up filtrados por estado con nombre del cliente.
+
+        Args:
+            status: 'pending' (lead detectado, sin reserva, sin opt-out, followups < 3)
+                    o 'done' (al menos un follow-up enviado).
+        """
+        from chatbot.reminders.lead_followup import FOLLOW_UP_OPTOUT_MARKER
+
+        if status == "done":
+            followup_sent_sq = (
+                sqlalchemy.select(
+                    message_table.c.user_phone,
+                    sqlalchemy.func.max(message_table.c.created_at).label(
+                        "last_followup_at"
+                    ),
+                )
+                .where(message_table.c.active.is_(True))
+                .where(message_table.c.tools_used.contains('"lead_followup_reminder"'))
+                .group_by(message_table.c.user_phone)
+                .subquery()
+            )
+            query = sqlalchemy.select(
+                followup_sent_sq.c.user_phone.label("phone"),
+                followup_sent_sq.c.last_followup_at.label("scheduled_at"),
+                users_table.c.name,
+            ).select_from(
+                followup_sent_sq.outerjoin(
+                    users_table,
+                    followup_sent_sq.c.user_phone == users_table.c.phone,
+                )
+            )
+        else:
+            has_lead_sq = (
+                sqlalchemy.select(message_table.c.user_phone)
+                .where(message_table.c.active.is_(True))
+                .where(message_table.c.tools_used.contains('"upsert_lead"'))
+                .distinct()
+                .subquery()
+            )
+            has_reservation_sq = (
+                sqlalchemy.select(message_table.c.user_phone)
+                .where(message_table.c.active.is_(True))
+                .where(
+                    sqlalchemy.or_(
+                        message_table.c.tools_used.contains(
+                            '"create_pending_reservation"'
+                        ),
+                        message_table.c.tools_used.contains(
+                            '"create_route_reservation"'
+                        ),
+                    )
+                )
+                .distinct()
+                .subquery()
+            )
+            has_optout_sq = (
+                sqlalchemy.select(message_table.c.user_phone)
+                .where(message_table.c.active.is_(True))
+                .where(message_table.c.role == "system")
+                .where(message_table.c.message == FOLLOW_UP_OPTOUT_MARKER)
+                .distinct()
+                .subquery()
+            )
+            stats_sq = (
+                sqlalchemy.select(
+                    message_table.c.user_phone,
+                    sqlalchemy.func.max(
+                        sqlalchemy.case(
+                            (
+                                message_table.c.role == "user",
+                                message_table.c.created_at,
+                            ),
+                            else_=None,
+                        )
+                    ).label("last_user_at"),
+                    sqlalchemy.func.sum(
+                        sqlalchemy.case(
+                            (
+                                message_table.c.tools_used.contains(
+                                    '"lead_followup_reminder"'
+                                ),
+                                1,
+                            ),
+                            else_=0,
+                        )
+                    ).label("followup_count"),
+                )
+                .where(message_table.c.active.is_(True))
+                .group_by(message_table.c.user_phone)
+                .subquery()
+            )
+            query = (
+                sqlalchemy.select(
+                    stats_sq.c.user_phone.label("phone"),
+                    stats_sq.c.last_user_at,
+                    stats_sq.c.followup_count,
+                    users_table.c.name,
+                )
+                .select_from(
+                    stats_sq.outerjoin(
+                        users_table,
+                        stats_sq.c.user_phone == users_table.c.phone,
+                    )
+                )
+                .where(
+                    stats_sq.c.user_phone.in_(
+                        sqlalchemy.select(has_lead_sq.c.user_phone)
+                    )
+                )
+                .where(
+                    stats_sq.c.user_phone.notin_(
+                        sqlalchemy.select(has_reservation_sq.c.user_phone)
+                    )
+                )
+                .where(
+                    stats_sq.c.user_phone.notin_(
+                        sqlalchemy.select(has_optout_sq.c.user_phone)
+                    )
+                )
+                .where(stats_sq.c.followup_count < 3)
+            )
+
+        if self.debug:
+            logger.debug(query)
+        return await self.database.fetch_all(query)
+
 
 database = init_db()
 services = Services(database)
