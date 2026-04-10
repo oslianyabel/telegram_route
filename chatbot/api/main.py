@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from chatbot.api.chat_router import router as chat_router
+from chatbot.api.demo_router import router as demo_router
 from chatbot.api.erp_router import router as erp_webhook_router
 from chatbot.api.utils.filesystem import create_dirs
 from chatbot.api.whatsapp_router import erp_client
@@ -87,6 +88,7 @@ app.add_middleware(
 app.include_router(whatsapp_router, prefix="/whatsapp")
 app.include_router(chat_router)
 app.include_router(erp_webhook_router, prefix="/erp")
+app.include_router(demo_router, prefix="/demo")
 
 
 @app.get("/health")
