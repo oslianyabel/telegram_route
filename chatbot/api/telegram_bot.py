@@ -390,7 +390,13 @@ async def _fetch_and_send_qr(chat_id: str, message: Message, ticket_id: str) -> 
         qr_data = await fetch_reservation_qr(erp_client=erp_client, ticket_id=ticket_id)
         qr_image_url = build_qr_image_url(qr_data.qr_image_url)
         caption = build_qr_caption(ticket_id=qr_data.ticket_id, token=qr_data.token)
-        await message.reply_photo(photo=qr_image_url, caption=caption, do_quote=True)
+        # Download the image on the server side: Telegram's API also fetches URLs
+        # server-side, which fails silently when the ERP is on a private network.
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            img_resp = await client.get(qr_image_url)
+            img_resp.raise_for_status()
+            image_bytes = img_resp.content
+        await message.reply_photo(photo=image_bytes, caption=caption, do_quote=True)
         logger.info(
             "[qr] QR sent to Telegram chat_id=%s ticket_id=%s qr_token_id=%s",
             chat_id,

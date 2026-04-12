@@ -42,3 +42,24 @@ async def test_send_document(whatsapp_manager: WhatsAppManager):
         filename="catalogo.pdf",
         caption="Catalogo de productos",
     )
+
+
+# uv run pytest -s chatbot/messaging/tests/test_whatsapp.py::test_upload_media_bytes_returns_media_id
+@pytest.mark.asyncio
+async def test_upload_media_bytes_returns_media_id():
+    print("=" * 25 + "test_upload_media_bytes_returns_media_id" + "=" * 25)
+    image_path = (
+        Path(__file__).resolve().parents[3] / "static" / "images" / "comprobante2.png"
+    )
+    image_bytes = image_path.read_bytes()
+    print(f"Imagen: {image_path.name} ({len(image_bytes)} bytes)")
+
+    manager = WhatsAppManager(request_timeout=60.0)
+    media_id = await manager.upload_media_bytes(
+        image_bytes=image_bytes,
+        content_type="image/png",
+        filename="comprobante2.png",
+    )
+
+    print(f"media_id={media_id}")
+    assert media_id, "Se esperaba un media_id no vacío"

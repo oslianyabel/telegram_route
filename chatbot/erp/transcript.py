@@ -61,12 +61,24 @@ async def _fetch_conversation_id(
         logger.debug("[_fetch_conversation_id] conversation_id=%s", conversation_id)
         return conversation_id
     except httpx.HTTPStatusError as exc:
-        logger.error(
-            "[_fetch_conversation_id] HTTP error for %s: %s - %s",
-            phone_number,
-            exc.response.status_code,
-            exc.response.text,
-        )
+        # 422 con "active conversation already exists" es un bug conocido del ERP:
+        # el endpoint debería devolver la conversación existente pero en su lugar lanza
+        # VALIDATION_ERROR. La subida del transcript sigue funcionando sin conversation_id.
+        if (
+            exc.response.status_code == 422
+            and "active conversation already exists" in exc.response.text.lower()
+        ):
+            logger.debug(
+                "[_fetch_conversation_id] Active conversation already exists for %s, proceeding without conversation_id",
+                phone_number,
+            )
+        else:
+            logger.error(
+                "[_fetch_conversation_id] HTTP error for %s: %s - %s",
+                phone_number,
+                exc.response.status_code,
+                exc.response.text,
+            )
     except httpx.RequestError as exc:
         logger.error(
             "[_fetch_conversation_id] Request error for %s: %s",

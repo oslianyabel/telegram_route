@@ -253,6 +253,49 @@ class WhatsAppManager(WhatsAppClient):
             message_id=message_id,
         )
 
+    async def upload_media_bytes(
+        self,
+        image_bytes: bytes,
+        content_type: str = "image/png",
+        filename: str = "image.png",
+        timeout: float = 60.0,
+    ) -> str:
+        """Sube bytes de imagen a la Media API de Meta y retorna el media_id."""
+        upload_url = f"{API_BASE}/{self.phone_number_id}/media"
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+        files = {
+            "file": (filename, image_bytes, content_type),
+            "messaging_product": (None, "whatsapp"),
+            "type": (None, content_type),
+        }
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
+            upload_resp = await client.post(upload_url, headers=headers, files=files)
+            upload_resp.raise_for_status()
+            data = upload_resp.json()
+
+        media_id: str = data["id"]
+        return media_id
+
+    async def upload_media(
+        self,
+        image_url: str,
+        mime_type: str = "image/png",
+    ) -> str:
+        """Descarga una imagen y la sube a la Media API de Meta.
+
+        Retorna el media_id que luego puede usarse en send_image_by_id.
+        Necesario cuando la URL de la imagen no es accesible públicamente
+        por Meta (ej: URLs de un ERP en red interna).
+        """
+        timeout = httpx.Timeout(self.request_timeout)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            download_resp = await client.get(image_url)
+            download_resp.raise_for_status()
+            image_bytes = download_resp.content
+            content_type = download_resp.headers.get("content-type", mime_type)
+
+        return await self.upload_media_bytes(image_bytes, content_type)
+
     @dev_mock
     async def mark_read(self, message_id: str) -> bool:
         payload = {

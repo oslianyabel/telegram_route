@@ -585,9 +585,9 @@ class Services:
                                     message_table.c.tools_used.contains(
                                         '"lead_followup_reminder"'
                                     ),
-                                    1,
+                                    sqlalchemy.literal_column("1"),
                                 ),
-                                else_=0,
+                                else_=sqlalchemy.literal_column("0"),
                             ),
                             sqlalchemy.Integer,
                         )

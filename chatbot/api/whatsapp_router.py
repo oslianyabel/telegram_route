@@ -984,9 +984,12 @@ async def _fetch_and_send_qr(
         qr_data = await fetch_reservation_qr(erp_client=erp_client, ticket_id=ticket_id)
         qr_image_url = build_qr_image_url(qr_data.qr_image_url)
         caption = build_qr_caption(ticket_id=qr_data.ticket_id, token=qr_data.token)
-        sent = await whatsapp_manager.send_image(
+        # Upload the image to Meta Media API so it is accessible by Meta's servers.
+        # Sending the ERP URL directly fails silently when the ERP is on a private network.
+        media_id = await whatsapp_manager.upload_media(qr_image_url)
+        sent = await whatsapp_manager.send_image_by_id(
             to=user_number,
-            image_url=qr_image_url,
+            image_id=media_id,
             caption=caption,
             message_id=message_id,
         )
