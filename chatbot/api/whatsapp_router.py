@@ -570,11 +570,18 @@ async def _process_message(message: Message) -> None:
         )
         await message_handler.save_user_msg(user_number, incoming_msg)
 
+        async def _send_photo_wa(image_bytes: bytes, caption: str) -> None:
+            media_id = await whatsapp_manager.upload_media_bytes(image_bytes)
+            await whatsapp_manager.send_image_by_id(
+                to=user_number, image_id=media_id, caption=caption
+            )
+
         deps = AgentDeps(
             erp_client=erp_client,
             db_services=services,
             whatsapp_client=whatsapp_manager,
             user_phone=user_number,
+            send_photo_callback=_send_photo_wa,
         )
 
         agent = get_cheese_agent()

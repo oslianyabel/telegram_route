@@ -6,6 +6,7 @@ and WhatsApp client.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 import httpx
@@ -33,3 +34,9 @@ class AgentDeps:
     has_completed_reservations: bool | None = None
     # Tracks the lead_id created/updated for this contact (required before creating a reservation)
     lead_id: str | None = None
+    # Channel-specific callback to send a photo (bytes, caption) to the user.
+    # Set by each channel handler (WhatsApp / Telegram). None when the channel
+    # does not support image delivery from agent tools.
+    send_photo_callback: Callable[[bytes, str], Awaitable[None]] | None = field(
+        default=None
+    )

@@ -870,12 +870,21 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await message_handler.save_user_msg(chat_id, incoming_msg)
 
             assert erp_client is not None, "ERP client not initialized"
+
+            async def _send_photo_tg(image_bytes: bytes, caption: str) -> None:
+                if update.message is None:
+                    return
+                await update.message.reply_photo(
+                    photo=image_bytes, caption=caption, do_quote=True
+                )
+
             deps = AgentDeps(
                 erp_client=erp_client,
                 db_services=services,
                 whatsapp_client=_noop_whatsapp,
                 user_phone=_user_phones.get(chat_id, ""),
                 telegram_id=chat_id,
+                send_photo_callback=_send_photo_tg,
             )
 
             agent = get_cheese_agent()

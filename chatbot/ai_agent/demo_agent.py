@@ -390,8 +390,11 @@ async def confirm_route_modification(
 
     modified: list[str] = []
     for change in changes:
-        ticket_id = change.get("ticket_id")
-        new_slot = change.get("new_slot")
+        ticket_id: str | None = change.get("ticket_id")
+        new_slot: str | None = change.get("new_slot")
+        if ticket_id is None or new_slot is None:
+            modified.append(f"- skipped entry missing ticket_id or new_slot: {change}")
+            continue
         ticket = session.tickets.get(ticket_id)
         if ticket is None:
             modified.append(f"- {ticket_id}: not found, skipped")

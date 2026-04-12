@@ -54,6 +54,7 @@ from chatbot.ai_agent.tools.notifications import (
     stop_lead_followups,
 )
 from chatbot.ai_agent.tools.payments import get_payment_instructions
+from chatbot.ai_agent.tools.qr import send_checkin_qr
 from chatbot.ai_agent.tools.support import create_complaint, submit_survey
 
 logger = logging.getLogger(__name__)
@@ -157,6 +158,8 @@ AGENT_TOOLS = [
     get_cancellation_impact,
     # Payments
     get_payment_instructions,
+    # QR check-in
+    send_checkin_qr,
     # Date resolution sub-agent
     resolve_relative_date,
     # Support & complaints
