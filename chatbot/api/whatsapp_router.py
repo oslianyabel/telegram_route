@@ -51,6 +51,7 @@ from chatbot.api.utils.text import strip_markdown
 from chatbot.api.utils.webhook_parser import (
     _TICKET_ID_RE,
     ParsedMessage,
+    create_or_retrieve_images_dir,
     extract_message_content,
 )
 from chatbot.core import human_control
@@ -993,7 +994,11 @@ async def _fetch_and_send_qr(
         caption = build_qr_caption(ticket_id=qr_data.ticket_id, token=qr_data.token)
         # Upload the image to Meta Media API so it is accessible by Meta's servers.
         # Sending the ERP URL directly fails silently when the ERP is on a private network.
-        media_id = await whatsapp_manager.upload_media(qr_image_url)
+        safe_phone = user_number.replace("+", "").replace(" ", "")
+        save_path = create_or_retrieve_images_dir() / f"{safe_phone}.png"
+        media_id = await whatsapp_manager.upload_media(
+            qr_image_url, save_path=save_path
+        )
         sent = await whatsapp_manager.send_image_by_id(
             to=user_number,
             image_id=media_id,

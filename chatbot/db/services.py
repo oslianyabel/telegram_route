@@ -360,6 +360,7 @@ class Services:
 
         Conditions:
         - reminder_count < 3 (máximo 3 recordatorios)
+        - confirmed_at <= cutoff (han pasado al menos 4h desde que se recibió el webhook y se enviaron las instrucciones de pago)
         - reminded_at IS NULL (primer recordatorio) o reminded_at <= cutoff (4h desde el último)
         - ticket_date >= hoy o ticket_date IS NULL (solo tickets con fecha futura)
         """
@@ -367,6 +368,7 @@ class Services:
         query = (
             deposit_reminders_table.select()
             .where(deposit_reminders_table.c.reminder_count < 3)
+            .where(deposit_reminders_table.c.confirmed_at <= cutoff)
             .where(
                 sqlalchemy.or_(
                     deposit_reminders_table.c.reminded_at.is_(None),

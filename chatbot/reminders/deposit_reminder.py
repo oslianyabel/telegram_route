@@ -75,9 +75,13 @@ def _build_reminder_message(pay_info: PaymentInstructions) -> str:
     instructions_block = f"\n\n{pay_info.instructions}" if pay_info.instructions else ""
     return _REMINDER_MESSAGE.format(
         ticket_id=pay_info.ticket_id,
-        amount_required=pay_info.amount_required or -1,
-        amount_paid=pay_info.amount_paid or -1,
-        amount_remaining=pay_info.amount_remaining or -1,
+        amount_required=pay_info.amount_required
+        if pay_info.amount_required is not None
+        else 0,
+        amount_paid=pay_info.amount_paid if pay_info.amount_paid is not None else 0,
+        amount_remaining=pay_info.amount_remaining
+        if pay_info.amount_remaining is not None
+        else 0,
         instructions_block=instructions_block,
     )
 

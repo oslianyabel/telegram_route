@@ -1,3 +1,4 @@
+import io
 import json
 import logging
 import sys
@@ -6,6 +7,7 @@ from typing import Any
 
 import httpx
 import requests
+from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from chatbot.core.config import config
@@ -27,6 +29,21 @@ def dev_mock(func):
         return await func(*args, **kwargs)
 
     return wrapper
+
+
+def _ensure_rgb_png(image_bytes: bytes) -> bytes:
+    """Convierte la imagen a RGB y la recodifica como PNG si es necesario.
+
+    WhatsApp requiere imágenes en modo RGB o RGBA. Los PNG en modo 1-bit (blanco/negro)
+    o en escala de grises (L) no se renderizan correctamente en algunos clientes.
+    """
+    with Image.open(io.BytesIO(image_bytes)) as img:
+        if img.mode in ("RGB", "RGBA"):
+            return image_bytes
+        rgb_img = img.convert("RGB")
+        buf = io.BytesIO()
+        rgb_img.save(buf, format="PNG")
+        return buf.getvalue()
 
 
 class WhatsAppClient:
@@ -280,6 +297,7 @@ class WhatsAppManager(WhatsAppClient):
         self,
         image_url: str,
         mime_type: str = "image/png",
+        save_path: Path | None = None,
     ) -> str:
         """Descarga una imagen y la sube a la Media API de Meta.
 
@@ -293,6 +311,14 @@ class WhatsAppManager(WhatsAppClient):
             download_resp.raise_for_status()
             image_bytes = download_resp.content
             content_type = download_resp.headers.get("content-type", mime_type)
+
+        image_bytes = _ensure_rgb_png(image_bytes)
+        content_type = "image/png"
+
+        if save_path is not None:
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+            save_path.write_bytes(image_bytes)
+            logger.debug("[upload_media] Saved image to %s", save_path)
 
         return await self.upload_media_bytes(image_bytes, content_type)
 

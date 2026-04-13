@@ -97,7 +97,7 @@ from chatbot.db.services import services
 from chatbot.erp.client import build_erp_client
 from chatbot.erp.transcript import upload_message_transcript
 from chatbot.messaging.telegram_notifier import notify_error
-from chatbot.messaging.whatsapp import WhatsAppManager
+from chatbot.messaging.whatsapp import WhatsAppManager, _ensure_rgb_png
 from chatbot.reminders.lead_followup import CHANNEL_MARKERS, CHANNEL_TELEGRAM
 
 logger = logging.getLogger(__name__)
@@ -395,7 +395,7 @@ async def _fetch_and_send_qr(chat_id: str, message: Message, ticket_id: str) -> 
         async with httpx.AsyncClient(timeout=15.0) as client:
             img_resp = await client.get(qr_image_url)
             img_resp.raise_for_status()
-            image_bytes = img_resp.content
+            image_bytes = _ensure_rgb_png(img_resp.content)
         await message.reply_photo(photo=image_bytes, caption=caption, do_quote=True)
         logger.info(
             "[qr] QR sent to Telegram chat_id=%s ticket_id=%s qr_token_id=%s",
