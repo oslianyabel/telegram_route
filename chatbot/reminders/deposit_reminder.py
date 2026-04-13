@@ -9,6 +9,7 @@ import httpx
 
 from chatbot.ai_agent.models import ERP_BASE_PATH, PaymentInstructions
 from chatbot.ai_agent.tools.erp_utils import extract_erp_data
+from chatbot.ai_agent.translation_agent import localize_message_from_messages
 from chatbot.db.services import Services
 from chatbot.messaging.telegram_notifier import notify_error
 from chatbot.messaging.telegram_notifier import send_message as send_telegram_message
@@ -159,11 +160,14 @@ async def process_pending_deposit_reminders(
                 continue
 
             message = _build_reminder_message(pay_info)
+            localized_message = await localize_message_from_messages(messages, message)
             channel = infer_channel(conversation_id=phone, messages=messages)
             if channel == CHANNEL_TELEGRAM:
-                ok = await send_telegram_message(chat_id=phone, text=message)
+                ok = await send_telegram_message(chat_id=phone, text=localized_message)
             else:
-                ok = await whatsapp_manager.send_text(user_number=phone, text=message)
+                ok = await whatsapp_manager.send_text(
+                    user_number=phone, text=localized_message
+                )
             if not ok:
                 logger.error(
                     "[deposit_reminder] Error enviando recordatorio a %s via %s (ticket=%s)",

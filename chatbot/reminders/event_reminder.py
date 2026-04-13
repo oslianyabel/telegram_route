@@ -5,6 +5,7 @@ import logging
 from datetime import UTC, datetime, time, timedelta
 from typing import Any
 
+from chatbot.ai_agent.translation_agent import localize_message_from_messages
 from chatbot.db.services import Services
 from chatbot.messaging.telegram_notifier import notify_error
 from chatbot.messaging.telegram_notifier import send_message as send_telegram_message
@@ -105,12 +106,19 @@ async def process_pending_event_reminders(db_services: Services) -> None:
                 ticket_id=ticket_id,
                 slot_time=display_time,
             )
+            localized_message: str = await localize_message_from_messages(
+                messages, message
+            )
 
             channel: str = infer_channel(conversation_id=phone, messages=messages)
             if channel == CHANNEL_TELEGRAM:
-                ok: bool = await send_telegram_message(chat_id=phone, text=message)
+                ok: bool = await send_telegram_message(
+                    chat_id=phone, text=localized_message
+                )
             else:
-                ok = await whatsapp_manager.send_text(user_number=phone, text=message)
+                ok = await whatsapp_manager.send_text(
+                    user_number=phone, text=localized_message
+                )
 
             if not ok:
                 logger.error(
@@ -125,7 +133,7 @@ async def process_pending_event_reminders(db_services: Services) -> None:
             await db_services.create_message(
                 phone=phone,
                 role="assistant",
-                message=f"Bot - {message}",
+                message=f"Bot - {localized_message}",
             )
             logger.info(
                 "[event_reminder] Recordatorio enviado a %s via %s (ticket=%s slot_time=%s)",

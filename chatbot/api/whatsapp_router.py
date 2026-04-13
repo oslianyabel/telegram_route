@@ -35,6 +35,7 @@ from chatbot.ai_agent.tools.payments import (
     validate_ocr_against_bank_account,
     validate_ticket_ownership,
 )
+from chatbot.ai_agent.translation_agent import localize_message
 from chatbot.api.utils import message_handler
 from chatbot.api.utils.message_queue import Message, message_queue
 from chatbot.api.utils.qr import (
@@ -181,7 +182,9 @@ async def _store_pending_file(
         )
         await whatsapp_manager.send_text(
             user_number=user_number,
-            text=_PENDING_DEPOSIT_MESSAGES[deposit_status],
+            text=await localize_message(
+                user_number, _PENDING_DEPOSIT_MESSAGES[deposit_status]
+            ),
             message_id=message_id,
         )
         return
@@ -194,9 +197,10 @@ async def _store_pending_file(
     )
     await whatsapp_manager.send_text(
         user_number=user_number,
-        text=(
+        text=await localize_message(
+            user_number,
             "I received your payment receipt. 🧾\n"
-            "Please send me the ticket number (for example: TKT-2026-03-00018) so I can register the payment:"
+            "Please send me the ticket number (for example: TKT-2026-03-00018) so I can register the payment:",
         ),
         message_id=message_id,
     )
@@ -225,9 +229,10 @@ async def _register_and_notify_payment(
         )
         await whatsapp_manager.send_text(
             user_number=user_number,
-            text=(
+            text=await localize_message(
+                user_number,
                 "The receipt could not be processed. "
-                "Please check the file and try again."
+                "Please check the file and try again.",
             ),
             message_id=message_id,
         )
@@ -259,9 +264,10 @@ async def _register_and_notify_payment(
         )
         await whatsapp_manager.send_text(
             user_number=user_number,
-            text=(
+            text=await localize_message(
+                user_number,
                 "The receipt amount could not be determined. "
-                "Please check the file and try again."
+                "Please check the file and try again.",
             ),
             message_id=message_id,
         )
@@ -282,7 +288,7 @@ async def _register_and_notify_payment(
         )
         await whatsapp_manager.send_text(
             user_number=user_number,
-            text=f"⚠️ {exc}",
+            text=await localize_message(user_number, f"⚠️ {exc}"),
             message_id=message_id,
         )
         return
@@ -303,7 +309,7 @@ async def _register_and_notify_payment(
         )
         await whatsapp_manager.send_text(
             user_number=user_number,
-            text=f"⚠️ {ocr_reason}",
+            text=await localize_message(user_number, f"⚠️ {ocr_reason}"),
             message_id=message_id,
         )
         return
@@ -327,7 +333,7 @@ async def _register_and_notify_payment(
             )
             await whatsapp_manager.send_text(
                 user_number=user_number,
-                text=f"⚠️ {user_msg}",
+                text=await localize_message(user_number, f"⚠️ {user_msg}"),
                 message_id=message_id,
             )
             return
@@ -344,9 +350,10 @@ async def _register_and_notify_payment(
         )
         await whatsapp_manager.send_text(
             user_number=user_number,
-            text=(
+            text=await localize_message(
+                user_number,
                 "An error occurred while registering your payment in the system. "
-                "Please try again or escalate your request to a human agent."
+                "Please try again or escalate your request to a human agent.",
             ),
             message_id=message_id,
         )
@@ -365,9 +372,10 @@ async def _register_and_notify_payment(
         )
         await whatsapp_manager.send_text(
             user_number=user_number,
-            text=(
+            text=await localize_message(
+                user_number,
                 "An error occurred while registering your payment in the system. "
-                "Please try again or escalate your request to a human agent."
+                "Please try again or escalate your request to a human agent.",
             ),
             message_id=message_id,
         )
@@ -383,11 +391,12 @@ async def _register_and_notify_payment(
         result.is_complete,
     )
     if result.is_complete:
-        msg = (
+        msg = await localize_message(
+            user_number,
             f"✅ Deposit fully paid!\n"
             f"Deposit: {result.deposit_id}\n"
             f"Ticket: {result.ticket_id}\n"
-            f"Total paid: {result.total_amount_paid} UYU"
+            f"Total paid: {result.total_amount_paid} UYU",
         )
         await whatsapp_manager.send_text(
             user_number=user_number, text=msg, message_id=message_id
@@ -398,11 +407,12 @@ async def _register_and_notify_payment(
             message_id=message_id,
         )
     else:
-        msg = (
+        msg = await localize_message(
+            user_number,
             f"✅ Payment registered successfully.\n"
             f"Deposit: {result.deposit_id}\n"
             f"Amount paid: {result.amount_paid} UYU\n"
-            f"Amount remaining: {result.amount_remaining} UYU"
+            f"Amount remaining: {result.amount_remaining} UYU",
         )
         await whatsapp_manager.send_text(
             user_number=user_number, text=msg, message_id=message_id
@@ -461,9 +471,10 @@ async def _handle_pending_survey_response(
                 f"_handle_pending_survey_response | user={user_number} | ticket={pending_survey.ticket_id}"
             ),
         )
-        error_message = (
+        error_message = await localize_message(
+            user_number,
             "Thanks for your feedback. We had a problem saving it in the system, "
-            "but we've already notified the team to review it."
+            "but we've already notified the team to review it.",
         )
         await message_handler.save_assistant_msg(user_number, error_message, [])
         await whatsapp_manager.send_text(
@@ -474,9 +485,10 @@ async def _handle_pending_survey_response(
         return True
 
     clear_pending_survey(user_number)
-    thanks_message = (
+    thanks_message = await localize_message(
+        user_number,
         f"Thanks for your feedback. We recorded your rating of {result.rating}/5"
-        f" for ticket {result.ticket_id}."
+        f" for ticket {result.ticket_id}.",
     )
     await message_handler.save_assistant_msg(user_number, thanks_message, [])
     await whatsapp_manager.send_text(
@@ -558,7 +570,9 @@ async def _process_message(message: Message) -> None:
             logger.info("'/restart' requested by %s", user_number)
             await services.reset_chat(user_number)
             await whatsapp_manager.send_text(
-                user_number=user_number, text="Chat restarted", message_id=message_id
+                user_number=user_number,
+                text=await localize_message(user_number, "Chat restarted"),
+                message_id=message_id,
             )
             return
 
@@ -683,7 +697,7 @@ async def _process_message(message: Message) -> None:
                 ai_response = explanation.user_message
             except Exception as explainer_exc:
                 logger.error("Error agent also failed: %s", explainer_exc)
-                ai_response = USER_ERROR_MSG
+                ai_response = await localize_message(user_number, USER_ERROR_MSG)
             tools_used = []
 
         logger.info("🤖 Agent response for %s: %s", user_number, ai_response)
@@ -710,7 +724,9 @@ async def _process_message(message: Message) -> None:
             context=f"_process_message | user={user_number} | msg={incoming_msg[:200]}",
         )
         await whatsapp_manager.send_text(
-            user_number=user_number, text=USER_ERROR_MSG, message_id=message_id
+            user_number=user_number,
+            text=await localize_message(user_number, USER_ERROR_MSG),
+            message_id=message_id,
         )
 
 
@@ -735,9 +751,10 @@ async def whatsapp_reply(request: Request, background_tasks: BackgroundTasks):
         await whatsapp_manager.mark_read(message_id)
         await whatsapp_manager.send_text(
             user_number=user_number,
-            text=(
+            text=await localize_message(
+                user_number,
                 "The file format is not supported. "
-                "Please send your payment receipt as a JPG, PNG or PDF."
+                "Please send your payment receipt as a JPG, PNG or PDF.",
             ),
             message_id=message_id,
         )
@@ -812,7 +829,9 @@ async def _process_image_receipt(
         )
         await whatsapp_manager.send_text(
             user_number=user_number,
-            text=_PENDING_DEPOSIT_MESSAGES[deposit_status],
+            text=await localize_message(
+                user_number, _PENDING_DEPOSIT_MESSAGES[deposit_status]
+            ),
             message_id=message_id,
         )
         return
@@ -826,9 +845,10 @@ async def _process_image_receipt(
         )
         await whatsapp_manager.send_text(
             user_number=user_number,
-            text=(
+            text=await localize_message(
+                user_number,
                 "The receipt amount could not be determined. "
-                "Please check the image and try again."
+                "Please check the image and try again.",
             ),
             message_id=message_id,
         )
@@ -849,7 +869,7 @@ async def _process_image_receipt(
         )
         await whatsapp_manager.send_text(
             user_number=user_number,
-            text=f"⚠️ {exc}",
+            text=await localize_message(user_number, f"⚠️ {exc}"),
             message_id=message_id,
         )
         return
@@ -870,7 +890,7 @@ async def _process_image_receipt(
         )
         await whatsapp_manager.send_text(
             user_number=user_number,
-            text=f"⚠️ {ocr_reason}",
+            text=await localize_message(user_number, f"⚠️ {ocr_reason}"),
             message_id=message_id,
         )
         return
@@ -894,7 +914,7 @@ async def _process_image_receipt(
             )
             await whatsapp_manager.send_text(
                 user_number=user_number,
-                text=f"⚠️ {user_msg}",
+                text=await localize_message(user_number, f"⚠️ {user_msg}"),
                 message_id=message_id,
             )
             return
@@ -911,9 +931,10 @@ async def _process_image_receipt(
         )
         await whatsapp_manager.send_text(
             user_number=user_number,
-            text=(
+            text=await localize_message(
+                user_number,
                 "An error occurred while registering your payment in the system. "
-                "Please try again or escalate your request to a human agent."
+                "Please try again or escalate your request to a human agent.",
             ),
             message_id=message_id,
         )
@@ -932,9 +953,10 @@ async def _process_image_receipt(
         )
         await whatsapp_manager.send_text(
             user_number=user_number,
-            text=(
+            text=await localize_message(
+                user_number,
                 "An error occurred while registering your payment in the system. "
-                "Please try again or escalate your request to a human agent."
+                "Please try again or escalate your request to a human agent.",
             ),
             message_id=message_id,
         )
@@ -950,11 +972,12 @@ async def _process_image_receipt(
         result.is_complete,
     )
     if result.is_complete:
-        msg = (
+        msg = await localize_message(
+            user_number,
             f"✅ Deposit fully paid!\n"
             f"Deposit: {result.deposit_id}\n"
             f"Ticket: {result.ticket_id}\n"
-            f"Total paid: {result.total_amount_paid} UYU"
+            f"Total paid: {result.total_amount_paid} UYU",
         )
         await whatsapp_manager.send_text(
             user_number=user_number, text=msg, message_id=message_id
@@ -965,11 +988,12 @@ async def _process_image_receipt(
             message_id=message_id,
         )
     else:
-        msg = (
+        msg = await localize_message(
+            user_number,
             f"✅ Payment registered successfully.\n"
             f"Deposit: {result.deposit_id}\n"
             f"Amount paid: {result.amount_paid} UYU\n"
-            f"Amount remaining: {result.amount_remaining} UYU"
+            f"Amount remaining: {result.amount_remaining} UYU",
         )
         await whatsapp_manager.send_text(
             user_number=user_number, text=msg, message_id=message_id
@@ -1027,9 +1051,10 @@ async def _fetch_and_send_qr(
         )
         await whatsapp_manager.send_text(
             user_number=user_number,
-            text=(
+            text=await localize_message(
+                user_number,
                 "Your payment was completed, but I couldn't send your check-in QR right now. "
-                "Please contact a human agent so they can share it with you."
+                "Please contact a human agent so they can share it with you.",
             ),
             message_id=message_id,
         )
