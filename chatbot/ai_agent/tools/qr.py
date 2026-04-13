@@ -12,6 +12,7 @@ from chatbot.api.utils.qr import (
     build_qr_image_url,
     fetch_reservation_qr,
 )
+from chatbot.messaging.whatsapp import _ensure_rgb_png
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,7 @@ async def send_checkin_qr(ctx: RunContext[AgentDeps], ticket_id: str) -> str:
         async with httpx.AsyncClient(timeout=QR_IMAGE_TIMEOUT_SECONDS) as client:
             img_resp = await client.get(qr_image_url)
             img_resp.raise_for_status()
-            image_bytes = img_resp.content
+            image_bytes = _ensure_rgb_png(img_resp.content)
     except httpx.HTTPError as exc:
         logger.error(
             "[send_checkin_qr] Failed to download QR image for ticket=%s: %s",
