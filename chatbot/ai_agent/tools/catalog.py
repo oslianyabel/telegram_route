@@ -243,7 +243,7 @@ async def get_availability(
     experience_id: str,
     date_from: str,
     date_to: str,
-) -> AvailabilityResponse:
+) -> AvailabilityResponse | str:
     """Check real-time availability for an experience over a date range.
 
     Args:
@@ -270,7 +270,15 @@ async def get_availability(
         json=payload,
         timeout=ERP_TIMEOUT_SECONDS,
     )
-    response.raise_for_status()
+    if response.is_error:
+        logger.error(
+            "[get_availability] ERP error %s – body: %s",
+            response.status_code,
+            response.text,
+        )
+        if response.status_code == 404:
+            return "El servicio de disponibilidad no está disponible en este momento. Informa al usuario e intenta más tarde."
+        response.raise_for_status()
     return AvailabilityResponse.model_validate(extract_erp_data(response.json()))
 
 

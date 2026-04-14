@@ -198,15 +198,21 @@ async def test_get_availability(ctx: RunContext[AgentDeps]) -> None:
     result = await get_availability(
         ctx,
         experience_id=exp_id,
-        date_from="2026-04-10",
-        date_to="2026-04-10",
+        date_from="2026-04-15",
+        date_to="2026-04-15",
     )
 
+    assert result is not None, "get_availability devolvió None"
     print(
-        f"\n  get_availability({exp_id}, 2026-04-10 -> 2026-04-10) -> {len(result.slots)} slots"
+        f"\n  get_availability({exp_id}, 2026-04-15 -> 2026-04-15) -> {len(result.slots)} slots"  # type: ignore
     )
     assert isinstance(result, AvailabilityResponse)
     assert result.experience_id == exp_id
+    print("  Slots:")
+    for slot in result.slots:
+        print(
+            f"    slot_id={slot.slot_id}  date={slot.date}  available_capacity={slot.available_capacity}"
+        )
 
 
 # uv run pytest -s chatbot/ai_agent/tests/test_catalog.py::test_get_route_availability
@@ -233,12 +239,12 @@ async def test_list_experiences_by_availability(ctx: RunContext[AgentDeps]) -> N
     """Debe retornar las experiencias con disponibilidad para el 2026-04-10."""
     result = await list_experiences_by_availability(
         ctx,
-        date_from="2026-04-14",
-        date_to="2026-04-14",
+        date_from="2026-04-15",
+        date_to="2026-04-15",
     )
 
     print(
-        f"\n  list_experiences_by_availability(2026-04-10) -> {len(result)} experiencias"
+        f"\n  list_experiences_by_availability(2026-04-15) -> {len(result)} experiencias"
     )
     for item in result:
         print(f"    experience_id={item.experience_id}  slots={len(item.slots)}")

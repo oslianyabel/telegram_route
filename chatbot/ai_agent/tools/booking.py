@@ -94,7 +94,23 @@ async def create_pending_reservation(
         },
         timeout=ERP_TIMEOUT_SECONDS,
     )
-    response.raise_for_status()
+    if response.is_error:
+        logger.error(
+            "[create_pending_reservation] ERP error %s – body: %s",
+            response.status_code,
+            response.text,
+        )
+        if response.status_code == 422:
+            try:
+                erp_msg = extract_erp_error(response.json())
+            except Exception:
+                erp_msg = response.text
+            raise ModelRetry(
+                f"El ERP rechazó la reserva con error de validación: {erp_msg}. "
+                "Revisa que experience_id, slot_id y selected_date sean correctos para este slot "
+                "y vuelve a llamar a create_pending_reservation con datos válidos."
+            )
+        response.raise_for_status()
     data: dict[str, Any] = extract_erp_data(response.json())
 
     ticket = PendingTicket.model_validate(data)
