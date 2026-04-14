@@ -233,8 +233,8 @@ async def test_list_experiences_by_availability(ctx: RunContext[AgentDeps]) -> N
     """Debe retornar las experiencias con disponibilidad para el 2026-04-10."""
     result = await list_experiences_by_availability(
         ctx,
-        date_from="2026-04-10",
-        date_to="2026-04-10",
+        date_from="2026-04-14",
+        date_to="2026-04-14",
     )
 
     print(

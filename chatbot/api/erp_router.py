@@ -20,6 +20,7 @@ from chatbot.ai_agent.models import (
     TicketDecision,
 )
 from chatbot.ai_agent.tools.erp_utils import extract_erp_data
+from chatbot.ai_agent.translation_agent import localize_message
 from chatbot.api.utils.message_handler import save_assistant_msg as save_msg
 from chatbot.api.utils.security import get_api_key
 from chatbot.api.utils.survey_feedback import PendingSurvey, set_pending_survey
@@ -449,7 +450,7 @@ async def _dispatch_activity_completed_survey(
 
         ok = await whatsapp_manager.send_text(
             user_number=phone,
-            text=SURVEY_MESSAGE,
+            text=await localize_message(phone, SURVEY_MESSAGE),
         )
         if not ok:
             logger.error(
@@ -480,7 +481,10 @@ async def _dispatch_activity_completed_survey(
                 detail="telegram_chat_id is required to send the survey via Telegram",
             )
 
-        ok = await send_telegram(chat_id=telegram_chat_id, text=SURVEY_MESSAGE)
+        ok = await send_telegram(
+            chat_id=telegram_chat_id,
+            text=await localize_message(telegram_chat_id, SURVEY_MESSAGE),
+        )
         if not ok:
             logger.error(
                 "[_dispatch_activity_completed_survey] Error enviando encuesta de satisfacción por Telegram a chat_id=%s",
@@ -566,9 +570,13 @@ async def _send_payment_instructions(
     pay_msg = "\n".join(lines)
 
     if channel == CHANNEL_TELEGRAM:
-        ok = await send_telegram(chat_id=phone, text=pay_msg)
+        ok = await send_telegram(
+            chat_id=phone, text=await localize_message(phone, pay_msg)
+        )
     else:
-        ok = await whatsapp_manager.send_text(user_number=phone, text=pay_msg)
+        ok = await whatsapp_manager.send_text(
+            user_number=phone, text=await localize_message(phone, pay_msg)
+        )
 
     if not ok:
         logger.error(
@@ -747,7 +755,10 @@ async def notify_ticket_status(body: ERPTicketStatusRequest) -> dict[str, str]:
     message = _build_ticket_message(body.new_status, body.ticket_id, body.observations)
 
     if channel == CHANNEL_TELEGRAM:
-        ok = await send_telegram(chat_id=phone, text=message)
+        ok = await send_telegram(
+            chat_id=phone,
+            text=await localize_message(phone, message),
+        )
         if not ok:
             logger.error("[ticket-status] Error enviando Telegram a %s", phone)
             await notify_error(
@@ -802,7 +813,9 @@ async def notify_ticket_status(body: ERPTicketStatusRequest) -> dict[str, str]:
             ),
         )
 
-    ok = await whatsapp_manager.send_text(user_number=phone, text=message)
+    ok = await whatsapp_manager.send_text(
+        user_number=phone, text=await localize_message(phone, message)
+    )
     if not ok:
         logger.error("[ticket-status] Error enviando WhatsApp a %s", phone)
         await notify_error(
